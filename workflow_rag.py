@@ -61,7 +61,15 @@ class DataverseWorkflowRAG:
         )
         
     def _extract_xaml_actions(self, xaml: str) -> List[str]:
-        """Extract action types from XAML content."""
+        """
+        Extract action types from XAML content by searching for action keywords.
+        
+        Args:
+            xaml (str): The workflow XAML content to analyze.
+        
+        Returns:
+            List[str]: List of action type names found (e.g., 'SET_VALUE', 'GET_VALUE', 'UPDATE_ENTITY').
+        """
         actions = []
         for action_type, keywords in self.ACTION_KEYWORDS.items():
             for keyword in keywords:
@@ -71,25 +79,67 @@ class DataverseWorkflowRAG:
         return actions
     
     def _extract_attributes_modified(self, xaml: str) -> List[str]:
-        """Extract attribute names being WRITTEN (SET operations only)."""
+        """
+        Extract attribute names being WRITTEN (SET operations only).
+        
+        Searches for SetEntityProperty elements in the XAML to identify fields being modified.
+        Does not include GetEntityProperty operations.
+        
+        Args:
+            xaml (str): The workflow XAML content to analyze.
+        
+        Returns:
+            List[str]: Unique list of attribute/field names being modified.
+        """
         # Only match SetEntityProperty, not GetEntityProperty
         set_pattern = r'<mxswa:SetEntityProperty[^>]+Attribute="([^"]+)"'
         matches = re.findall(set_pattern, xaml)
         return list(set(matches))
     
     def _extract_attributes_read(self, xaml: str) -> List[str]:
-        """Extract attribute names being READ (GET operations only)."""
+        """
+        Extract attribute names being READ (GET operations only).
+        
+        Searches for GetEntityProperty elements in the XAML to identify fields being read.
+        Does not include SetEntityProperty operations.
+        
+        Args:
+            xaml (str): The workflow XAML content to analyze.
+        
+        Returns:
+            List[str]: Unique list of attribute/field names being read.
+        """
         # Only match GetEntityProperty
         get_pattern = r'<mxswa:GetEntityProperty[^>]+Attribute="([^"]+)"'
         matches = re.findall(get_pattern, xaml)
         return list(set(matches))
     
     def _get_workflow_type(self, category: int) -> str:
-        """Get human-readable workflow type from category number."""
+        """
+        Get human-readable workflow type from category number.
+        
+        Args:
+            category (int): The workflow category number (0 for Classic Workflow, 2 for Business Rule).
+        
+        Returns:
+            str: Human-readable workflow type name (e.g., "Business Rule", "Classic Workflow").
+        """
         return self.CATEGORY_NAMES.get(category, f"Unknown Type (Category {category})")
     
     def _preprocess_workflows(self) -> List[Document]:
-        """Preprocess workflow file into structured documents with metadata."""
+        """
+        Preprocess workflow file into structured documents with metadata.
+        
+        Reads the workflow file, parses each workflow dictionary, extracts XAML actions
+        and attributes, creates enriched content with metadata, and returns LlamaIndex
+        Document objects ready for indexing.
+        
+        Returns:
+            List[Document]: List of LlamaIndex Document objects with workflow data and metadata.
+        
+        Side Effects:
+            Prints processing status messages for each workflow.
+        """
         with open(self.workflow_file, 'r', encoding='utf-8') as f:
             content = f.read()
         
@@ -171,7 +221,18 @@ ACTION DETAILS:
         return documents
     
     def _load_or_create_index(self) -> VectorStoreIndex:
-        """Load existing index or create new one from preprocessed workflow data."""
+        """
+        Load existing index or create new one from preprocessed workflow data.
+        
+        Creates a vector store index from workflow documents using LlamaIndex.
+        Uses SentenceSplitter for chunking and Google embeddings for vectorization.
+        
+        Returns:
+            VectorStoreIndex: The created vector store index.
+        
+        Side Effects:
+            Prints progress messages during index creation.
+        """
         print("Creating new index with XAML preprocessing...")
         documents = self._preprocess_workflows()
         
@@ -289,31 +350,62 @@ ACTION DETAILS:
         return str(response)
     
     def analyze_field_updates(self) -> str:
-        """Identify all field updates in the workflow XAML."""
+        """
+        Identify all field updates in the workflow XAML.
+        
+        Returns:
+            str: LLM-generated response listing all modified attributes with workflow details.
+        """
         return self.query(
             "What field updates occur in these workflows? List all record attributes that are modified with workflow type, name, and ID."
         )
     
     def analyze_business_rules(self) -> str:
-        """Analyze business rule actions and their impact."""
+        """
+        Analyze business rule actions and their impact.
+        
+        Returns:
+            str: LLM-generated response describing business rule actions and impacts.
+        """
         return self.query(
             "What business rule actions are defined? How do they impact form behavior or data integrity?"
         )
     
     def analyze_workflow_logic(self) -> str:
-        """Analyze the overall workflow logic and conditional behavior."""
+        """
+        Analyze the overall workflow logic and conditional behavior.
+        
+        Returns:
+            str: LLM-generated response describing workflow logic and conditions.
+        """
         return self.query(
             "Describe the workflow logic, including any conditional branches and their conditions."
         )
     
     def get_workflow_by_name(self, name: str) -> str:
-        """Get details about a specific workflow by name."""
+        """
+        Get details about a specific workflow by name.
+        
+        Args:
+            name (str): The name of the workflow to search for.
+        
+        Returns:
+            str: LLM-generated response with workflow details including type, ID, and actions.
+        """
         return self.query(
             f"What actions are performed in the workflow named '{name}'? Include the workflow type, ID, and all actions."
         )
     
     def refresh_index(self):
-        """Refresh the index by re-preprocessing the workflow file."""
+        """
+        Refresh the index by re-preprocessing the workflow file.
+        
+        Use this method after updating the workflow file to rebuild the vector store index
+        with the latest data.
+        
+        Side Effects:
+            Recreates self.index and self.query_engine with fresh data.
+        """
         self.index = self._load_or_create_index()
         self.query_engine = self.index.as_query_engine(
             llm=self.llm,
