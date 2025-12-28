@@ -153,32 +153,55 @@ class DataverseOperations:
                 - xaml: The workflow definition in XAML format
                 - statecode: Should be 1 (activated)
         
+        Raises:
+            ValueError: If the dependency list structure is invalid.
+        
         Example:
             >>> ops = DataverseOperations()
             >>> workflows = ops.retrieve_only_workflowdependency(dependencies)
         """
-        filerforrequiredtype = (depen for depen in dependencylist.get('value') if depen.get('dependentcomponenttype')==29 and depen.get('dependencytype')==2)
-        workflowids = []
-        workflowlist = []
-        for dep in filerforrequiredtype:
-            id = dep.get('dependentcomponentobjectid')
-            workflowids.append(id)
-
-        for workflowid in workflowids:
-            workflow = requests.get(f"{self.dataverse_envurl}api/data/v9.2/workflows({workflowid})?$select=category,xaml,name,statecode",
-                           headers={
-                               'Accept': 'application/json',
-                               'OData-MaxVersion': '4.0',
-                               'OData-Version': '4.0',
-                               'Authorization': f'Bearer {self.token}'
-                           })
+        try:
+            if not dependencylist or 'value' not in dependencylist:
+                raise ValueError("Invalid dependency list: missing 'value' key")
             
-            workflow_data = workflow.json()
+            filerforrequiredtype = (depen for depen in dependencylist.get('value') if depen.get('dependentcomponenttype')==29 and depen.get('dependencytype')==2)
+            workflowids = []
+            workflowlist = []
+            
+            for dep in filerforrequiredtype:
+                id = dep.get('dependentcomponentobjectid')
+                if id:
+                    workflowids.append(id)
 
-            if workflow_data.get('statecode') == 1 and (workflow_data.get('category')==0 or workflow_data.get('category')==2):
-                workflowlist.append(workflow_data)
+            for workflowid in workflowids:
+                try:
+                    workflow = requests.get(f"{self.dataverse_envurl}api/data/v9.2/workflows({workflowid})?$select=category,xaml,name,statecode",
+                                   headers={
+                                       'Accept': 'application/json',
+                                       'OData-MaxVersion': '4.0',
+                                       'OData-Version': '4.0',
+                                       'Authorization': f'Bearer {self.token}'
+                                   })
+                    
+                    workflow.raise_for_status()
+                    workflow_data = workflow.json()
 
-        return workflowlist
+                    if workflow_data.get('statecode') == 1 and (workflow_data.get('category')==0 or workflow_data.get('category')==2):
+                        workflowlist.append(workflow_data)
+                        
+                except requests.exceptions.RequestException as e:
+                    print(f"Warning: Failed to retrieve workflow {workflowid}: {str(e)}")
+                    continue
+                except ValueError as e:
+                    print(f"Warning: Invalid JSON response for workflow {workflowid}: {str(e)}")
+                    continue
+
+            return workflowlist
+            
+        except (KeyError, TypeError) as e:
+            raise ValueError(
+                f"Error processing workflow dependencies: {str(e)}"
+            ) from e
     
     def get_forms_for_entity(self, entityname:str):
         """
