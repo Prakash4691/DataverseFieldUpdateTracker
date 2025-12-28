@@ -2,13 +2,47 @@ import requests
 from connect_to_dataverse import ConnectToDataverse 
 
 class DataverseOperations:
+    """
+    Provides methods for interacting with Microsoft Dataverse Web API.
+    
+    This class handles various Dataverse operations including retrieving attribute metadata,
+    dependency lists, workflows, business rules, forms, and web resources using the OData v4.0 protocol.
+    
+    Attributes:
+        dataverse_envurl (str): The Dataverse environment URL from ConnectToDataverse.
+        token (str): The OAuth2 access token for API authentication from ConnectToDataverse.
+    """
 
     def __init__(self):
+        """
+        Initialize DataverseOperations with authenticated connection.
+        
+        Creates a ConnectToDataverse instance to obtain the environment URL and access token
+        for making authenticated API requests.
+        """
         client = ConnectToDataverse()
         self.dataverse_envurl = client.dataverse_envurl
         self.token = client.token
 
     def get_attibuteid(self, entityname:str, attributename:str):
+        """
+        Retrieve the MetadataId (GUID) of a specific entity attribute.
+        
+        Args:
+            entityname (str): The logical name of the entity (e.g., 'account', 'contact').
+            attributename (str): The logical name of the attribute/field (e.g., 'name', 'emailaddress1').
+        
+        Returns:
+            str: The MetadataId (GUID) of the attribute.
+        
+        Raises:
+            ConnectionError: If the API request fails.
+            ValueError: If the attribute is not found in the entity or response format is invalid.
+        
+        Example:
+            >>> ops = DataverseOperations()
+            >>> attr_id = ops.get_attibuteid('account', 'name')
+        """
         try:
             attributemetadata = requests.get(
             f"{self.dataverse_envurl}api/data/v9.2/EntityDefinitions(LogicalName='{entityname}')/Attributes?$filter=LogicalName eq '{attributename}'",
@@ -47,6 +81,28 @@ class DataverseOperations:
             ) from e
     
     def get_dependencylist_for_attribute(self, attributeid:str):
+        """
+        Retrieve all dependencies for a specific attribute.
+        
+        Uses the RetrieveDependenciesForDelete function to get all components that depend
+        on the specified attribute.
+        
+        Args:
+            attributeid (str): The MetadataId (GUID) of the attribute.
+        
+        Returns:
+            dict: Full dependency JSON response containing a 'value' list with dependency objects.
+                Each dependency object includes keys like 'dependentcomponenttype', 
+                'dependentcomponentobjectid', 'dependencytype', etc.
+        
+        Raises:
+            ConnectionError: If the API request fails.
+            ValueError: If the response format is invalid.
+        
+        Example:
+            >>> ops = DataverseOperations()
+            >>> dependencies = ops.get_dependencylist_for_attribute(attr_id)
+        """
         try:
             dependency = requests.get(f"{self.dataverse_envurl}api/data/v9.2/RetrieveDependenciesForDelete(ObjectId={attributeid},ComponentType=2)",
                                headers={
@@ -79,6 +135,31 @@ class DataverseOperations:
             ) from e
     
     def retrieve_only_workflowdependency(self, dependencylist):
+        """
+        Filter dependencies to retrieve only activated workflows and business rules.
+        
+        Filters for component type 29 (workflows), dependency type 2, and state code 1 (activated).
+        Only includes workflows with category 0 (Classic Workflows) or category 2 (Business Rules).
+        
+        Args:
+            dependencylist (dict): Dependency list returned from get_dependencylist_for_attribute.
+                Expected to have a 'value' key containing a list of dependency objects.
+        
+        Returns:
+            list: List of workflow metadata dictionaries, each containing:
+                - name: Workflow name
+                - workflowid: Workflow GUID
+                - category: 0 for Classic Workflow, 2 for Business Rule
+                - xaml: The workflow definition in XAML format
+                - statecode: Should be 1 (activated)
+        
+        Raises:
+            ValueError: If the dependency list structure is invalid.
+        
+        Example:
+            >>> ops = DataverseOperations()
+            >>> workflows = ops.retrieve_only_workflowdependency(dependencies)
+        """
         try:
             if not dependencylist or 'value' not in dependencylist:
                 raise ValueError("Invalid dependency list: missing 'value' key")
@@ -123,14 +204,33 @@ class DataverseOperations:
             ) from e
     
     def get_forms_for_entity(self, entityname:str):
+        """
+        Retrieve all main and mobile forms for a specific entity.
+        
+        Queries for forms of type 2 (Main form) or type 6 (Mobile form).
+        
+        Args:
+            entityname (str): The logical name of the entity (e.g., 'account', 'contact').
+        
+        Returns:
+            list: List of form IDs (GUIDs) for the entity.
+        
+        Raises:
+            ConnectionError: If the API request fails.
+            ValueError: If the response format is invalid.
+        
+        Example:
+            >>> ops = DataverseOperations()
+            >>> form_ids = ops.get_forms_for_entity('account')
+        """
         try:
             forms = requests.get(f"{self.dataverse_envurl}api/data/v9.2/systemforms?$filter=objecttypecode eq '{entityname}' and (type eq 2 or type eq 6)&$select=formid",
-                           headers={
-                               'Accept': 'application/json',
-                               'OData-MaxVersion': '4.0',
-                               'OData-Version': '4.0',
-                               'Authorization': f'Bearer {self.token}'
-                           })
+                               headers={
+                                   'Accept': 'application/json',
+                                   'OData-MaxVersion': '4.0',
+                                   'OData-Version': '4.0',
+                                   'Authorization': f'Bearer {self.token}'
+                               })
             
             forms.raise_for_status()
             response_data = forms.json()
@@ -158,8 +258,24 @@ class DataverseOperations:
     
     def get_dependencylist_for_form(self, formids:list):
         """
-        Parse FormXML directly to find web resource references
-        This is more reliable than querying the dependency table
+        Parse FormXML directly to find web resource references.
+        
+        This method retrieves form metadata and extracts web resource references from FormXML
+        by searching for Library, WebResource, and src attributes. This approach is more reliable
+        than querying the dependency table.
+        
+        Args:
+            formids (list): List of form GUIDs to analyze.
+        
+        Returns:
+            list: List of dictionaries, each containing:
+                - formid: The form GUID
+                - webresourcename: The name of the referenced web resource
+        
+        Example:
+            >>> ops = DataverseOperations()
+            >>> form_ids = ops.get_forms_for_entity('account')
+            >>> web_refs = ops.get_dependencylist_for_form(form_ids)
         """
         webresource_references = []
         
@@ -217,8 +333,26 @@ class DataverseOperations:
     
     def retrieve_webresources_from_dependency(self, webresource_references):
         """
-        Now accepts web resource references parsed from FormXML
-        Decodes base64 content to get actual web resource content
+        Retrieve and decode web resource content from references parsed from FormXML.
+        
+        Accepts web resource references, queries Dataverse for each web resource by name,
+        and decodes base64-encoded content. Only processes JavaScript files (webresourcetype = 3).
+        
+        Args:
+            webresource_references (list): List of dictionaries containing:
+                - formid: The form GUID
+                - webresourcename: The name of the web resource to retrieve
+        
+        Returns:
+            list: List of dictionaries, each containing:
+                - name: Web resource name
+                - id: Web resource GUID
+                - decoded_content: Decoded JavaScript content (UTF-8 string)
+        
+        Example:
+            >>> ops = DataverseOperations()
+            >>> web_refs = ops.get_dependencylist_for_form(form_ids)
+            >>> web_resources = ops.retrieve_webresources_from_dependency(web_refs)
         """
         import base64
         

@@ -3,7 +3,34 @@ from azure.identity import ClientSecretCredential
 from PowerPlatform.Dataverse.client import DataverseClient
 
 class ConnectToDataverse:
+    """
+    Handles authentication to Microsoft Dataverse using Azure service principal credentials.
+    
+    This class reads credentials from a .env file and acquires an OAuth2 access token
+    for authenticating to the Dataverse Web API.
+    
+    Attributes:
+        dataverse_envurl (str): The Dataverse environment URL (e.g., https://org.crm.dynamics.com/).
+        token (str): The OAuth2 access token for API authentication.
+    
+    Required Environment Variables:
+        client_id: Azure AD application client ID
+        tenant_id: Azure AD tenant ID
+        client_secret: Azure AD application secret
+        env_url: Dataverse environment URL
+    """
+    
     def __init__(self):
+        """
+        Initialize the Dataverse connection by reading credentials and acquiring an access token.
+        
+        Reads credentials from .env file, creates a ClientSecretCredential, and acquires
+        an OAuth2 access token using the DataverseClient.
+        
+        Raises:
+            ValueError: If required environment variables are missing from .env file.
+            ConnectionError: If authentication fails or token acquisition fails.
+        """
         credentialdetails=dotenv_values('.env')
         
         # Validate required environment variables
