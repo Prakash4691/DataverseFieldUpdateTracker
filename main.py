@@ -12,10 +12,9 @@ formslist = dvoperation.get_forms_for_entity('cr5b9_test1')
 deplistform = dvoperation.get_dependencylist_for_form(formslist)
 webreslist = dvoperation.retrieve_webresources_from_dependency(deplistform)
 
-print(webreslist)
+ImplementationDefinitionFileOperations.create_webresourceflow_file(webreslist)
 
-
-#ImplementationDefinitionFileOperations.create_workflow_file(wflist)
+ImplementationDefinitionFileOperations.create_workflow_file(wflist)
 
 #cr5b9_test1
 #cr5b9_attribmeta
