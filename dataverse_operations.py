@@ -215,21 +215,46 @@ class DataverseOperations:
         Returns:
             list: List of form IDs (GUIDs) for the entity.
         
+        Raises:
+            ConnectionError: If the API request fails.
+            ValueError: If the response format is invalid.
+        
         Example:
             >>> ops = DataverseOperations()
             >>> form_ids = ops.get_forms_for_entity('account')
         """
-        forms = requests.get(f"{self.dataverse_envurl}api/data/v9.2/systemforms?$filter=objecttypecode eq '{entityname}' and (type eq 2 or type eq 6)&$select=formid",
-                           headers={
-                               'Accept': 'application/json',
-                               'OData-MaxVersion': '4.0',
-                               'OData-Version': '4.0',
-                               'Authorization': f'Bearer {self.token}'
-                           })
-        
-        formslist = [form.get('formid') for form in forms.json().get('value')]
-        
-        return formslist
+        try:
+            forms = requests.get(f"{self.dataverse_envurl}api/data/v9.2/systemforms?$filter=objecttypecode eq '{entityname}' and (type eq 2 or type eq 6)&$select=formid",
+                               headers={
+                                   'Accept': 'application/json',
+                                   'OData-MaxVersion': '4.0',
+                                   'OData-Version': '4.0',
+                                   'Authorization': f'Bearer {self.token}'
+                               })
+            
+            forms.raise_for_status()
+            response_data = forms.json()
+            
+            if 'value' not in response_data:
+                raise ValueError(
+                    f"Unexpected response format for forms of entity '{entityname}'. "
+                    f"Expected 'value' key in response."
+                )
+            
+            formslist = [form.get('formid') for form in response_data.get('value') if form.get('formid')]
+            
+            return formslist
+            
+        except requests.exceptions.RequestException as e:
+            raise ConnectionError(
+                f"Failed to retrieve forms for entity '{entityname}': {str(e)}"
+            ) from e
+        except ValueError as e:
+            if "Unexpected response format" in str(e):
+                raise
+            raise ValueError(
+                f"Invalid JSON response when retrieving forms for entity '{entityname}': {str(e)}"
+            ) from e
     
     def get_dependencylist_for_form(self, formids:list):
         """
@@ -254,40 +279,55 @@ class DataverseOperations:
         """
         webresource_references = []
         
+        if not formids:
+            return webresource_references
+        
         for formid in formids:
-            # Get the form with its FormXML
-            form = requests.get(
-                f"{self.dataverse_envurl}api/data/v9.2/systemforms({formid})?$select=formxml,name",
-                headers={
-                    'Accept': 'application/json',
-                    'OData-MaxVersion': '4.0',
-                    'OData-Version': '4.0',
-                    'Authorization': f'Bearer {self.token}'
-                })
-            
-            form_data = form.json()
-            
-            if 'formxml' in form_data:
-                formxml = form_data['formxml']
-                # Find web resource references in FormXML
-                # Patterns: <Library name="webresourcename" or <WebResource id="webresourcename"
-                import re
+            try:
+                # Get the form with its FormXML
+                form = requests.get(
+                    f"{self.dataverse_envurl}api/data/v9.2/systemforms({formid})?$select=formxml,name",
+                    headers={
+                        'Accept': 'application/json',
+                        'OData-MaxVersion': '4.0',
+                        'OData-Version': '4.0',
+                        'Authorization': f'Bearer {self.token}'
+                    })
                 
-                # Pattern 1: <Library name="webresource_name"
-                library_pattern = r'<Library\s+name="([^"]+)"'
-                libraries = re.findall(library_pattern, formxml, re.IGNORECASE)
+                form.raise_for_status()
+                form_data = form.json()
                 
-                # Pattern 2: <WebResource id="webresource_name"
-                webresource_pattern = r'<WebResource[^>]+id="([^"]+)"'
-                webresources = re.findall(webresource_pattern, formxml, re.IGNORECASE)
-                
-                # Pattern 3: src attribute with .js, .css, etc.
-                src_pattern = r'src="([^"]+\.(js|css|html))"'
-                src_files = re.findall(src_pattern, formxml, re.IGNORECASE)
-                
-                all_refs = set(libraries + webresources + [src[0] for src in src_files])
-                
-                webresource_references.extend([{'formid': formid, 'webresourcename': ref} for ref in all_refs])
+                if 'formxml' in form_data:
+                    formxml = form_data['formxml']
+                    # Find web resource references in FormXML
+                    # Patterns: <Library name="webresourcename" or <WebResource id="webresourcename"
+                    import re
+                    
+                    # Pattern 1: <Library name="webresource_name"
+                    library_pattern = r'<Library\s+name="([^"]+)"'
+                    libraries = re.findall(library_pattern, formxml, re.IGNORECASE)
+                    
+                    # Pattern 2: <WebResource id="webresource_name"
+                    webresource_pattern = r'<WebResource[^>]+id="([^"]+)"'
+                    webresources = re.findall(webresource_pattern, formxml, re.IGNORECASE)
+                    
+                    # Pattern 3: src attribute with .js, .css, etc.
+                    src_pattern = r'src="([^"]+\.(js|css|html))"'
+                    src_files = re.findall(src_pattern, formxml, re.IGNORECASE)
+                    
+                    all_refs = set(libraries + webresources + [src[0] for src in src_files])
+                    
+                    webresource_references.extend([{'formid': formid, 'webresourcename': ref} for ref in all_refs])
+                    
+            except requests.exceptions.RequestException as e:
+                print(f"Warning: Failed to retrieve form {formid}: {str(e)}")
+                continue
+            except ValueError as e:
+                print(f"Warning: Invalid JSON response for form {formid}: {str(e)}")
+                continue
+            except Exception as e:
+                print(f"Warning: Error processing form {formid}: {str(e)}")
+                continue
         
         return webresource_references
     
@@ -318,39 +358,57 @@ class DataverseOperations:
         
         webresourcelist = []
         
+        if not webresource_references:
+            return webresourcelist
+        
         for ref in webresource_references:
-            webresource_name = ref['webresourcename']
-            
-            # Query web resource by name
-            webresource_query = requests.get(
-                f"{self.dataverse_envurl}api/data/v9.2/webresourceset?$filter=name eq '{webresource_name}'&$select=name,webresourcetype,content,webresourceid",
-                headers={
-                    'Accept': 'application/json',
-                    'OData-MaxVersion': '4.0',
-                    'OData-Version': '4.0',
-                    'Authorization': f'Bearer {self.token}'
-                })
-            
-            webresource_data = webresource_query.json()
-            
-            if 'value' in webresource_data and len(webresource_data['value']) > 0:
-                webresource = webresource_data['value'][0]
+            try:
+                webresource_name = ref.get('webresourcename')
                 
-                # Only process JavaScript files (webresourcetype = 3)
-                if webresource.get('webresourcetype') == 3:
-                    # Decode base64 content if present
-                    decoded_content = ""
-                    if 'content' in webresource and webresource['content']:
-                        try:
-                            decoded_content = base64.b64decode(webresource['content']).decode('utf-8')
-                        except Exception as e:
-                            decoded_content = f"Error decoding content: {str(e)}"
-                    
-                    # Only include name, id, and decoded_content
-                    webresourcelist.append({
-                        'name': webresource.get('name'),
-                        'id': webresource.get('webresourceid'),
-                        'decoded_content': decoded_content
+                if not webresource_name:
+                    continue
+                
+                # Query web resource by name
+                webresource_query = requests.get(
+                    f"{self.dataverse_envurl}api/data/v9.2/webresourceset?$filter=name eq '{webresource_name}'&$select=name,webresourcetype,content,webresourceid",
+                    headers={
+                        'Accept': 'application/json',
+                        'OData-MaxVersion': '4.0',
+                        'OData-Version': '4.0',
+                        'Authorization': f'Bearer {self.token}'
                     })
+                
+                webresource_query.raise_for_status()
+                webresource_data = webresource_query.json()
+                
+                if 'value' in webresource_data and len(webresource_data['value']) > 0:
+                    webresource = webresource_data['value'][0]
+                    
+                    # Only process JavaScript files (webresourcetype = 3)
+                    if webresource.get('webresourcetype') == 3:
+                        # Decode base64 content if present
+                        decoded_content = ""
+                        if 'content' in webresource and webresource['content']:
+                            try:
+                                decoded_content = base64.b64decode(webresource['content']).decode('utf-8')
+                            except Exception as e:
+                                decoded_content = f"Error decoding content: {str(e)}"
+                        
+                        # Only include name, id, and decoded_content
+                        webresourcelist.append({
+                            'name': webresource.get('name'),
+                            'id': webresource.get('webresourceid'),
+                            'decoded_content': decoded_content
+                        })
+                        
+            except requests.exceptions.RequestException as e:
+                print(f"Warning: Failed to retrieve web resource '{ref.get('webresourcename', 'unknown')}': {str(e)}")
+                continue
+            except ValueError as e:
+                print(f"Warning: Invalid JSON response for web resource '{ref.get('webresourcename', 'unknown')}': {str(e)}")
+                continue
+            except Exception as e:
+                print(f"Warning: Error processing web resource '{ref.get('webresourcename', 'unknown')}': {str(e)}")
+                continue
         
         return webresourcelist
