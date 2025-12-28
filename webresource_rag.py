@@ -28,28 +28,61 @@ class DataverseWebResourceRAG:
         Args:
             webresource_file: Path to the web resource JavaScript file
             persist_dir: Directory to persist the index
+        
+        Raises:
+            ValueError: If GOOGLE_API_KEY environment variable is not set.
+            FileNotFoundError: If the web resource file does not exist.
+            RuntimeError: If RAG system initialization fails.
         """
         self.webresource_file = webresource_file
         self.persist_dir = persist_dir
         
-        # Configure Google Gemini LLM and embeddings
-        self.llm = GoogleGenAI(model="gemini-2.5-flash", temperature=0.1)
-        self.embed_model = GoogleGenAIEmbedding(model="models/text-embedding-004")
+        # Validate Google API key is set
+        if not os.environ.get('GOOGLE_API_KEY'):
+            raise ValueError(
+                "GOOGLE_API_KEY environment variable is not set. "
+                "Please set it in your .env file or environment."
+            )
         
-        # Set global settings
-        Settings.llm = self.llm
-        Settings.embed_model = self.embed_model
+        # Validate web resource file exists
+        if not os.path.exists(webresource_file):
+            raise FileNotFoundError(
+                f"Web resource file not found: {webresource_file}. "
+                f"Please run the data retrieval script first to generate this file."
+            )
         
-        # Load or create index
-        self.index = self._load_or_create_index()
-        self.query_engine = self.index.as_query_engine(
-            llm=self.llm,
-            similarity_top_k=3,
-            response_mode="compact"
-        )
+        try:
+            # Configure Google Gemini LLM and embeddings
+            self.llm = GoogleGenAI(model="gemini-2.5-flash", temperature=0.1)
+            self.embed_model = GoogleGenAIEmbedding(model="models/text-embedding-004")
+            
+            # Set global settings
+            Settings.llm = self.llm
+            Settings.embed_model = self.embed_model
+            
+            # Load or create index
+            self.index = self._load_or_create_index()
+            self.query_engine = self.index.as_query_engine(
+                llm=self.llm,
+                similarity_top_k=3,
+                response_mode="compact"
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to initialize RAG system: {str(e)}. "
+                f"Please verify your Google API key and network connection."
+            ) from e
         
     def _extract_javascript_actions(self, js_code: str) -> List[str]:
-        """Extract action types from JavaScript code."""
+        """
+        Extract action types from JavaScript code by searching for action keywords.
+        
+        Args:
+            js_code (str): The JavaScript code content to analyze.
+        
+        Returns:
+            List[str]: List of action type names found (e.g., 'SET_VALUE').
+        """
         actions = []
         for action_type, keywords in self.ACTION_KEYWORDS.items():
             for keyword in keywords:
@@ -61,8 +94,16 @@ class DataverseWebResourceRAG:
     def _extract_fields_modified(self, js_code: str) -> List[str]:
         """
         Extract field names being modified with setValue operations.
-        Detects both direct chained calls and variable assignments.
-        Case-sensitive matching.
+        
+        Detects setValue() calls on fields through multiple patterns including direct chained calls
+        (formContext.getAttribute().setValue()), variable assignments, and deprecated Xrm.Page syntax.
+        Uses case-sensitive matching.
+        
+        Args:
+            js_code (str): The JavaScript code content to analyze.
+        
+        Returns:
+            List[str]: Unique list of field names being modified via setValue() operations.
         """
         fields_modified = []
         
@@ -101,9 +142,27 @@ class DataverseWebResourceRAG:
         return list(set(fields_modified))
     
     def _preprocess_webresources(self) -> List[Document]:
-        """Preprocess web resource file into structured documents with metadata."""
-        with open(self.webresource_file, 'r', encoding='utf-8') as f:
-            content = f.read()
+        """
+        Preprocess web resource file into structured documents with metadata.
+        
+        Reads the web resource file, parses each web resource dictionary, extracts JavaScript
+        actions and modified fields, creates enriched content with metadata, and returns
+        LlamaIndex Document objects ready for indexing.
+        
+        Returns:
+            List[Document]: List of LlamaIndex Document objects with web resource data and metadata.
+        
+        Raises:
+            IOError: If the web resource file cannot be read.
+        
+        Side Effects:
+            Prints processing status messages for each web resource.
+        """
+        try:
+            with open(self.webresource_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except IOError as e:
+            raise IOError(f"Failed to read web resource file '{self.webresource_file}': {str(e)}") from e
         
         webresource_dicts = content.strip().split('\n')
         documents = []
@@ -155,6 +214,9 @@ ACTION DETAILS:
                 print(f"✓ Processed [Web Resource]: {name}")
                 print(f"  Modified fields: {fields_modified}")
                 
+            except (ValueError, SyntaxError) as e:
+                print(f"✗ Error parsing web resource string: {e}")
+                continue
             except Exception as e:
                 print(f"✗ Error processing web resource: {e}")
                 continue
@@ -162,30 +224,51 @@ ACTION DETAILS:
         return documents
     
     def _load_or_create_index(self) -> VectorStoreIndex:
-        """Load existing index or create new one from preprocessed web resource data."""
-        print("Creating new index with JavaScript preprocessing...")
-        documents = self._preprocess_webresources()
+        """
+        Load existing index or create new one from preprocessed web resource data.
         
-        if not documents:
-            print("⚠ No web resources found in file. Creating empty index.")
-            # Create a placeholder document to avoid empty index error
-            placeholder = Document(
-                text="No web resources available",
-                metadata={'webresource_name': 'None', 'webresource_id': 'None', 
-                         'modified_fields': '', 'has_set_value': 'False'}
+        Creates a vector store index from web resource documents using LlamaIndex.
+        Uses SentenceSplitter for chunking and Google embeddings for vectorization.
+        If no web resources are found, creates a placeholder document to avoid errors.
+        
+        Returns:
+            VectorStoreIndex: The created vector store index.
+        
+        Raises:
+            RuntimeError: If index creation fails.
+        
+        Side Effects:
+            Prints progress messages during index creation.
+        """
+        try:
+            print("Creating new index with JavaScript preprocessing...")
+            documents = self._preprocess_webresources()
+            
+            if not documents:
+                print("⚠ No web resources found in file. Creating empty index.")
+                # Create a placeholder document to avoid empty index error
+                placeholder = Document(
+                    text="No web resources available",
+                    metadata={'webresource_name': 'None', 'webresource_id': 'None', 
+                             'modified_fields': '', 'has_set_value': 'False'}
+                )
+                documents = [placeholder]
+            
+            node_parser = SentenceSplitter(chunk_size=512, chunk_overlap=100)
+            
+            index = VectorStoreIndex.from_documents(
+                documents,
+                embed_model=self.embed_model,
+                transformations=[node_parser],
+                show_progress=True
             )
-            documents = [placeholder]
-        
-        node_parser = SentenceSplitter(chunk_size=512, chunk_overlap=100)
-        
-        index = VectorStoreIndex.from_documents(
-            documents,
-            embed_model=self.embed_model,
-            transformations=[node_parser],
-            show_progress=True
-        )
-        
-        return index
+            
+            return index
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to create vector index: {str(e)}. "
+                f"This may be due to invalid web resource data or Google API issues."
+            ) from e
     
     def query(self, question: str) -> str:
         """
@@ -196,9 +279,18 @@ ACTION DETAILS:
             
         Returns:
             Answer based on the indexed web resource JavaScript
+        
+        Raises:
+            RuntimeError: If the query execution fails.
         """
-        response = self.query_engine.query(question)
-        return str(response)
+        try:
+            response = self.query_engine.query(question)
+            return str(response)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to execute query '{question}': {str(e)}. "
+                f"This may be due to Google API issues or an invalid query."
+            ) from e
     
     def find_setvalue_webresources(self, fieldname: str) -> str:
         """
@@ -252,19 +344,40 @@ ACTION DETAILS:
         return result
     
     def analyze_field_updates(self) -> str:
-        """Identify all field updates in the web resource JavaScript."""
+        """
+        Identify all field updates in the web resource JavaScript.
+        
+        Returns:
+            str: LLM-generated response listing all fields modified with setValue().
+        """
         return self.query(
             "What field updates occur in these web resources? List all fields that are modified with setValue()."
         )
     
     def get_webresource_by_name(self, name: str) -> str:
-        """Get details about a specific web resource by name."""
+        """
+        Get details about a specific web resource by name.
+        
+        Args:
+            name (str): The name of the web resource to search for.
+        
+        Returns:
+            str: LLM-generated response with web resource details including ID and modified fields.
+        """
         return self.query(
             f"What actions are performed in the web resource named '{name}'? Include the ID and all fields modified."
         )
     
     def refresh_index(self):
-        """Refresh the index by re-preprocessing the web resource file."""
+        """
+        Refresh the index by re-preprocessing the web resource file.
+        
+        Use this method after updating the web resource file to rebuild the vector store index
+        with the latest data.
+        
+        Side Effects:
+            Recreates self.index and self.query_engine with fresh data.
+        """
         self.index = self._load_or_create_index()
         self.query_engine = self.index.as_query_engine(
             llm=self.llm,
@@ -274,4 +387,9 @@ ACTION DETAILS:
 
 
 # Create default RAG instance
-webresource_agent = DataverseWebResourceRAG()
+try:
+    webresource_agent = DataverseWebResourceRAG()
+except Exception as e:
+    print(f"Warning: Failed to initialize default web resource RAG agent: {str(e)}")
+    print("You will need to initialize DataverseWebResourceRAG() manually after resolving the issue.")
+    webresource_agent = None

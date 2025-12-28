@@ -40,28 +40,61 @@ class DataverseWorkflowRAG:
         Args:
             workflow_file: Path to the workflow XAML file
             persist_dir: Directory to persist the index
+        
+        Raises:
+            ValueError: If GOOGLE_API_KEY environment variable is not set.
+            FileNotFoundError: If the workflow file does not exist.
+            RuntimeError: If RAG system initialization fails.
         """
         self.workflow_file = workflow_file
         self.persist_dir = persist_dir
         
-        # Configure Google Gemini LLM and embeddings
-        self.llm = GoogleGenAI(model="gemini-2.5-flash", temperature=0.1)
-        self.embed_model = GoogleGenAIEmbedding(model="models/text-embedding-004")
+        # Validate Google API key is set
+        if not os.environ.get('GOOGLE_API_KEY'):
+            raise ValueError(
+                "GOOGLE_API_KEY environment variable is not set. "
+                "Please set it in your .env file or environment."
+            )
         
-        # Set global settings
-        Settings.llm = self.llm
-        Settings.embed_model = self.embed_model
+        # Validate workflow file exists
+        if not os.path.exists(workflow_file):
+            raise FileNotFoundError(
+                f"Workflow file not found: {workflow_file}. "
+                f"Please run the data retrieval script first to generate this file."
+            )
         
-        # Load or create index
-        self.index = self._load_or_create_index()
-        self.query_engine = self.index.as_query_engine(
-            llm=self.llm,
-            similarity_top_k=3,
-            response_mode="compact"
-        )
+        try:
+            # Configure Google Gemini LLM and embeddings
+            self.llm = GoogleGenAI(model="gemini-2.5-flash", temperature=0.1)
+            self.embed_model = GoogleGenAIEmbedding(model="models/text-embedding-004")
+            
+            # Set global settings
+            Settings.llm = self.llm
+            Settings.embed_model = self.embed_model
+            
+            # Load or create index
+            self.index = self._load_or_create_index()
+            self.query_engine = self.index.as_query_engine(
+                llm=self.llm,
+                similarity_top_k=3,
+                response_mode="compact"
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to initialize RAG system: {str(e)}. "
+                f"Please verify your Google API key and network connection."
+            ) from e
         
     def _extract_xaml_actions(self, xaml: str) -> List[str]:
-        """Extract action types from XAML content."""
+        """
+        Extract action types from XAML content by searching for action keywords.
+        
+        Args:
+            xaml (str): The workflow XAML content to analyze.
+        
+        Returns:
+            List[str]: List of action type names found (e.g., 'SET_VALUE', 'GET_VALUE', 'UPDATE_ENTITY').
+        """
         actions = []
         for action_type, keywords in self.ACTION_KEYWORDS.items():
             for keyword in keywords:
@@ -71,27 +104,76 @@ class DataverseWorkflowRAG:
         return actions
     
     def _extract_attributes_modified(self, xaml: str) -> List[str]:
-        """Extract attribute names being WRITTEN (SET operations only)."""
+        """
+        Extract attribute names being WRITTEN (SET operations only).
+        
+        Searches for SetEntityProperty elements in the XAML to identify fields being modified.
+        Does not include GetEntityProperty operations.
+        
+        Args:
+            xaml (str): The workflow XAML content to analyze.
+        
+        Returns:
+            List[str]: Unique list of attribute/field names being modified.
+        """
         # Only match SetEntityProperty, not GetEntityProperty
         set_pattern = r'<mxswa:SetEntityProperty[^>]+Attribute="([^"]+)"'
         matches = re.findall(set_pattern, xaml)
         return list(set(matches))
     
     def _extract_attributes_read(self, xaml: str) -> List[str]:
-        """Extract attribute names being READ (GET operations only)."""
+        """
+        Extract attribute names being READ (GET operations only).
+        
+        Searches for GetEntityProperty elements in the XAML to identify fields being read.
+        Does not include SetEntityProperty operations.
+        
+        Args:
+            xaml (str): The workflow XAML content to analyze.
+        
+        Returns:
+            List[str]: Unique list of attribute/field names being read.
+        """
         # Only match GetEntityProperty
         get_pattern = r'<mxswa:GetEntityProperty[^>]+Attribute="([^"]+)"'
         matches = re.findall(get_pattern, xaml)
         return list(set(matches))
     
     def _get_workflow_type(self, category: int) -> str:
-        """Get human-readable workflow type from category number."""
+        """
+        Get human-readable workflow type from category number.
+        
+        Args:
+            category (int): The workflow category number (0 for Classic Workflow, 2 for Business Rule).
+        
+        Returns:
+            str: Human-readable workflow type name (e.g., "Business Rule", "Classic Workflow").
+        """
         return self.CATEGORY_NAMES.get(category, f"Unknown Type (Category {category})")
     
     def _preprocess_workflows(self) -> List[Document]:
-        """Preprocess workflow file into structured documents with metadata."""
-        with open(self.workflow_file, 'r', encoding='utf-8') as f:
-            content = f.read()
+        """
+        Preprocess workflow file into structured documents with metadata.
+        
+        Reads the workflow file, parses each workflow dictionary, extracts XAML actions
+        and attributes, creates enriched content with metadata, and returns LlamaIndex
+        Document objects ready for indexing.
+        
+        Returns:
+            List[Document]: List of LlamaIndex Document objects with workflow data and metadata.
+        
+        Raises:
+            IOError: If the workflow file cannot be read.
+            ValueError: If no valid workflows are found in the file.
+        
+        Side Effects:
+            Prints processing status messages for each workflow.
+        """
+        try:
+            with open(self.workflow_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except IOError as e:
+            raise IOError(f"Failed to read workflow file '{self.workflow_file}': {str(e)}") from e
         
         workflow_dicts = content.strip().split('\n')
         documents = []
@@ -164,27 +246,56 @@ ACTION DETAILS:
                 print(f"  Modified fields: {attributes_modified}")
                 print(f"  Read fields: {attributes_read}")
                 
+            except (ValueError, SyntaxError) as e:
+                print(f"✗ Error parsing workflow string: {e}")
+                continue
             except Exception as e:
                 print(f"✗ Error processing workflow: {e}")
                 continue
         
+        if not documents:
+            raise ValueError(
+                f"No valid workflows found in '{self.workflow_file}'. "
+                f"The file may be empty or contain invalid data."
+            )
+        
         return documents
     
     def _load_or_create_index(self) -> VectorStoreIndex:
-        """Load existing index or create new one from preprocessed workflow data."""
-        print("Creating new index with XAML preprocessing...")
-        documents = self._preprocess_workflows()
+        """
+        Load existing index or create new one from preprocessed workflow data.
         
-        node_parser = SentenceSplitter(chunk_size=512, chunk_overlap=100)
+        Creates a vector store index from workflow documents using LlamaIndex.
+        Uses SentenceSplitter for chunking and Google embeddings for vectorization.
         
-        index = VectorStoreIndex.from_documents(
-            documents,
-            embed_model=self.embed_model,
-            transformations=[node_parser],
-            show_progress=True
-        )
+        Returns:
+            VectorStoreIndex: The created vector store index.
         
-        return index
+        Raises:
+            RuntimeError: If index creation fails.
+        
+        Side Effects:
+            Prints progress messages during index creation.
+        """
+        try:
+            print("Creating new index with XAML preprocessing...")
+            documents = self._preprocess_workflows()
+            
+            node_parser = SentenceSplitter(chunk_size=512, chunk_overlap=100)
+            
+            index = VectorStoreIndex.from_documents(
+                documents,
+                embed_model=self.embed_model,
+                transformations=[node_parser],
+                show_progress=True
+            )
+            
+            return index
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to create vector index: {str(e)}. "
+                f"This may be due to invalid workflow data or Google API issues."
+            ) from e
     
     def query(self, question: str) -> str:
         """
@@ -195,9 +306,18 @@ ACTION DETAILS:
             
         Returns:
             Answer based on the indexed workflow XAML
+        
+        Raises:
+            RuntimeError: If the query execution fails.
         """
-        response = self.query_engine.query(question)
-        return str(response)
+        try:
+            response = self.query_engine.query(question)
+            return str(response)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to execute query '{question}': {str(e)}. "
+                f"This may be due to Google API issues or an invalid query."
+            ) from e
     
     def find_set_value_workflows(self, fieldname: str) -> str:
         """
@@ -289,31 +409,62 @@ ACTION DETAILS:
         return str(response)
     
     def analyze_field_updates(self) -> str:
-        """Identify all field updates in the workflow XAML."""
+        """
+        Identify all field updates in the workflow XAML.
+        
+        Returns:
+            str: LLM-generated response listing all modified attributes with workflow details.
+        """
         return self.query(
             "What field updates occur in these workflows? List all record attributes that are modified with workflow type, name, and ID."
         )
     
     def analyze_business_rules(self) -> str:
-        """Analyze business rule actions and their impact."""
+        """
+        Analyze business rule actions and their impact.
+        
+        Returns:
+            str: LLM-generated response describing business rule actions and impacts.
+        """
         return self.query(
             "What business rule actions are defined? How do they impact form behavior or data integrity?"
         )
     
     def analyze_workflow_logic(self) -> str:
-        """Analyze the overall workflow logic and conditional behavior."""
+        """
+        Analyze the overall workflow logic and conditional behavior.
+        
+        Returns:
+            str: LLM-generated response describing workflow logic and conditions.
+        """
         return self.query(
             "Describe the workflow logic, including any conditional branches and their conditions."
         )
     
     def get_workflow_by_name(self, name: str) -> str:
-        """Get details about a specific workflow by name."""
+        """
+        Get details about a specific workflow by name.
+        
+        Args:
+            name (str): The name of the workflow to search for.
+        
+        Returns:
+            str: LLM-generated response with workflow details including type, ID, and actions.
+        """
         return self.query(
             f"What actions are performed in the workflow named '{name}'? Include the workflow type, ID, and all actions."
         )
     
     def refresh_index(self):
-        """Refresh the index by re-preprocessing the workflow file."""
+        """
+        Refresh the index by re-preprocessing the workflow file.
+        
+        Use this method after updating the workflow file to rebuild the vector store index
+        with the latest data.
+        
+        Side Effects:
+            Recreates self.index and self.query_engine with fresh data.
+        """
         self.index = self._load_or_create_index()
         self.query_engine = self.index.as_query_engine(
             llm=self.llm,
@@ -323,4 +474,9 @@ ACTION DETAILS:
 
 
 # Create default RAG instance
-root_agent = DataverseWorkflowRAG()
+try:
+    root_agent = DataverseWorkflowRAG()
+except Exception as e:
+    print(f"Warning: Failed to initialize default workflow RAG agent: {str(e)}")
+    print("You will need to initialize DataverseWorkflowRAG() manually after resolving the issue.")
+    root_agent = None
