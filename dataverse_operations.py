@@ -36,23 +36,49 @@ class DataverseOperations:
             str: The MetadataId (GUID) of the attribute.
         
         Raises:
-            IndexError: If the attribute is not found in the entity.
-            KeyError: If the response doesn't contain expected keys.
+            ConnectionError: If the API request fails.
+            ValueError: If the attribute is not found in the entity or response format is invalid.
         
         Example:
             >>> ops = DataverseOperations()
             >>> attr_id = ops.get_attibuteid('account', 'name')
         """
-        attributemetadata = requests.get(
-        f"{self.dataverse_envurl}api/data/v9.2/EntityDefinitions(LogicalName='{entityname}')/Attributes?$filter=LogicalName eq '{attributename}'",
-        headers={
-        'Accept': 'application/json',
-        'OData-MaxVersion': '4.0',
-        'OData-Version': '4.0',
-        'Authorization': f'Bearer {self.token}'})
-        attributeid = attributemetadata.json().get('value')[0].get('MetadataId')
-
-        return attributeid
+        try:
+            attributemetadata = requests.get(
+            f"{self.dataverse_envurl}api/data/v9.2/EntityDefinitions(LogicalName='{entityname}')/Attributes?$filter=LogicalName eq '{attributename}'",
+            headers={
+            'Accept': 'application/json',
+            'OData-MaxVersion': '4.0',
+            'OData-Version': '4.0',
+            'Authorization': f'Bearer {self.token}'})
+            
+            attributemetadata.raise_for_status()
+            
+            response_data = attributemetadata.json()
+            
+            if not response_data.get('value'):
+                raise ValueError(
+                    f"Attribute '{attributename}' not found for entity '{entityname}'. "
+                    f"Please verify the entity and attribute names."
+                )
+            
+            attributeid = response_data['value'][0].get('MetadataId')
+            
+            if not attributeid:
+                raise ValueError(
+                    f"MetadataId not found for attribute '{attributename}' in entity '{entityname}'."
+                )
+            
+            return attributeid
+            
+        except requests.exceptions.RequestException as e:
+            raise ConnectionError(
+                f"Failed to retrieve attribute ID for '{entityname}.{attributename}': {str(e)}"
+            ) from e
+        except (KeyError, IndexError) as e:
+            raise ValueError(
+                f"Unexpected response format when retrieving attribute '{attributename}' for entity '{entityname}': {str(e)}"
+            ) from e
     
     def get_dependencylist_for_attribute(self, attributeid:str):
         """
@@ -69,21 +95,44 @@ class DataverseOperations:
                 Each dependency object includes keys like 'dependentcomponenttype', 
                 'dependentcomponentobjectid', 'dependencytype', etc.
         
+        Raises:
+            ConnectionError: If the API request fails.
+            ValueError: If the response format is invalid.
+        
         Example:
             >>> ops = DataverseOperations()
             >>> dependencies = ops.get_dependencylist_for_attribute(attr_id)
         """
-        dependency = requests.get(f"{self.dataverse_envurl}api/data/v9.2/RetrieveDependenciesForDelete(ObjectId={attributeid},ComponentType=2)",
-                           headers={
-                               'Accept': 'application/json',
-                               'OData-MaxVersion': '4.0',
-                               'OData-Version': '4.0',
-                               'Authorization': f'Bearer {self.token}'
-                           })
-
-        dependencylist = dependency.json()
-
-        return dependencylist
+        try:
+            dependency = requests.get(f"{self.dataverse_envurl}api/data/v9.2/RetrieveDependenciesForDelete(ObjectId={attributeid},ComponentType=2)",
+                               headers={
+                                   'Accept': 'application/json',
+                                   'OData-MaxVersion': '4.0',
+                                   'OData-Version': '4.0',
+                                   'Authorization': f'Bearer {self.token}'
+                               })
+            
+            dependency.raise_for_status()
+            dependencylist = dependency.json()
+            
+            if 'value' not in dependencylist:
+                raise ValueError(
+                    f"Unexpected response format for dependencies of attribute '{attributeid}'. "
+                    f"Expected 'value' key in response."
+                )
+            
+            return dependencylist
+            
+        except requests.exceptions.RequestException as e:
+            raise ConnectionError(
+                f"Failed to retrieve dependencies for attribute '{attributeid}': {str(e)}"
+            ) from e
+        except ValueError as e:
+            if "Unexpected response format" in str(e):
+                raise
+            raise ValueError(
+                f"Invalid JSON response when retrieving dependencies for attribute '{attributeid}': {str(e)}"
+            ) from e
     
     def retrieve_only_workflowdependency(self, dependencylist):
         """
