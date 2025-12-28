@@ -15,14 +15,14 @@ print("=" * 80)
 # Test 1: Find workflows with SET VALUE actions
 print("\n1. Finding workflows with SET VALUE/SET DEFAULT actions:")
 print("-" * 80)
-result = root_agent.find_set_value_workflows('cr5b9_attribmeta')
+result = root_agent.find_set_value_workflows('fieldname')
 print(result)
 print("=" * 80)
 
 
 print("\n\n1. Finding webresource with SET VALUE actions:")
 print("-" * 80)
-result = webresource_agent.find_setvalue_webresources('cr5b9_attribmeta')
+result = webresource_agent.find_setvalue_webresources('fieldname')
 print(result)
 
 

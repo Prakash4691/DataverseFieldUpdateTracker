@@ -130,7 +130,7 @@ from file_operations import ImplementationDefinitionFileOperations
 dvoperation = DataverseOperations()
 
 # Get attribute ID for a specific field
-attributeid = dvoperation.get_attibuteid('cr5b9_test1', 'cr5b9_attribmeta')
+attributeid = dvoperation.get_attibuteid('entityname', 'fieldname')
 
 # Retrieve all dependencies for the attribute
 deplist = dvoperation.get_dependencylist_for_attribute(attributeid)
