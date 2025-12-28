@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This is a Python-based tool for tracking field updates in Microsoft Dataverse by analyzing business rules and classic workflows. The tool retrieves attribute dependencies, extracts workflow XAML definitions, and uses RAG (Retrieval-Augmented Generation) with Google Gemini AI to analyze which business rules and workflows modify specific fields. Supports both Business Rules (category=2) and Classic Workflows (category=0).
+This is a Python-based tool for tracking field updates in Microsoft Dataverse by analyzing business rules, classic workflows, and JavaScript web resources. The tool retrieves attribute dependencies, extracts workflow XAML definitions and web resource JavaScript code, and uses RAG (Retrieval-Augmented Generation) with Google Gemini AI to analyze which business rules, workflows, and web resources modify specific fields. Supports Business Rules (category=2), Classic Workflows (category=0), and Form Script Web Resources.
 
 ## Tech Stack
 
@@ -19,14 +19,20 @@ This is a Python-based tool for tracking field updates in Microsoft Dataverse by
 ```
 dataverse-field-update-tracker/
 ├── connect_to_dataverse.py      # Dataverse authentication handler
-├── dataverse_operations.py      # Core Dataverse API operations
-├── file_operations.py           # File I/O for business rule data
-├── businessrule_rag_cp.py       # RAG system for XAML analysis (business rules + workflows)
+├── dataverse_operations.py      # Core Dataverse API operations (workflows + web resources)
+├── file_operations.py           # File I/O for workflow and web resource data
+├── workflow_rag.py              # RAG system for XAML analysis (business rules + workflows)
+├── webresource_rag.py           # RAG system for JavaScript web resource analysis
+├── main.py                      # Main execution script
+├── example_usage.py             # Example usage of RAG systems
 ├── requirements.txt             # Python dependencies
 ├── pyproject.toml              # Project metadata
 ├── .env                        # Environment variables (NOT in git)
 ├── .gitignore                  # Git ignore rules
-└── README.md                   # Project documentation
+├── README.md                   # Project documentation
+├── AGENTS.md                   # This file
+├── wf.txt                      # Generated workflow metadata
+└── webre.txt                   # Generated web resource metadata
 ```
 
 ## Core Components
@@ -169,14 +175,98 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 }
 ```
 
+### 5. Web Resource RAG System (`webresource_rag.py`)
+
+**Class**: `DataverseWebResourceRAG`
+
+**Purpose**: Analyze web resource JavaScript files using RAG to identify field setValue operations. Detects field modifications in form scripts through multiple JavaScript patterns.
+
+**Key Features**:
+
+- **JavaScript Pattern Detection**: Identifies setValue operations using regex
+- **Multiple Pattern Support**: Direct calls, variable assignments, deprecated patterns
+- **Whitespace Handling**: Flexible regex to handle formatting variations
+- **Case-Sensitive Matching**: Field names matched case-sensitively
+- **Metadata Indexing**: Creates searchable index with structured metadata
+- **Filtered Queries**: Supports metadata-based filtering for specific fields
+
+**Methods**:
+
+- `__init__(webresource_file='./webre.txt', persist_dir='./storage_webres')`
+
+  - Initializes LLM (Gemini 2.5 Flash) and embeddings (text-embedding-004)
+  - Loads or creates vector index
+
+- `_extract_javascript_actions(js_code: str) -> List[str]`
+
+  - Detects action keywords in JavaScript code
+
+- `_extract_fields_modified(js_code: str) -> List[str]`
+
+  - Regex patterns:
+    - `formContext\.\s*getAttribute\s*\(\s*["'](\w+)["']\s*\)\s*\.\s*setValue\s*\(`
+    - `formContext\.\s*getControl\s*\(\s*["'](\w+)["']\s*\)\s*\.\s*setValue\s*\(`
+    - `Xrm\.\s*Page\.\s*getAttribute\s*\(\s*["'](\w+)["']\s*\)\s*\.\s*setValue\s*\(`
+    - Variable assignments: `(?:var|let|const)\s+(\w+)\s*=\s*(?:formContext|executionContext\.\s*getFormContext\s*\(\s*\))\.\.\s*getAttribute\s*\(\s*["'](\w+)["']\s*\)` followed by `\1\.\s*setValue\s*\(`
+  - Returns unique field names being modified
+
+- `find_setvalue_webresources(fieldname: str) -> str`
+
+  - **Most Important Method**: Finds all web resources that use setValue() on a specific field
+  - Uses metadata filters: `modified_fields` CONTAINS fieldname AND `has_set_value` EQ True
+  - Returns: LLM-generated list with web resource names and IDs, or "No webresources found"
+
+- `analyze_field_updates() -> str`
+
+  - Identifies all field updates across all web resources
+
+- `query(question: str) -> str`
+  - General natural language query interface
+
+**Metadata Structure**:
+
+```python
+{
+    'webresource_name': str,
+    'webresource_id': str,
+    'actions': str,  # pipe-separated action types
+    'modified_fields': str,  # pipe-separated field names
+    'has_set_value': str  # "True" or "False"
+}
+```
+
+**JavaScript Patterns Detected**:
+
+1. **Direct chained calls**: `formContext.getAttribute("field").setValue(value)`
+2. **Control setValue**: `formContext.getControl("field").setValue(value)`
+3. **Deprecated Xrm.Page**: `Xrm.Page.getAttribute("field").setValue(value)`
+4. **Variable assignments**:
+   ```javascript
+   let ctrl = formContext.getAttribute("field");
+   ctrl.setValue(value);
+   ```
+5. **ExecutionContext chain**: `executionContext.getFormContext().getAttribute("field").setValue(value)`
+6. **Whitespace variations**: `formContext. getAttribute("field"). setValue(value)`
+
 ## Typical Workflow
+
+### Workflow Analysis
 
 1. **Authenticate**: Create `ConnectToDataverse` instance
 2. **Get Attribute ID**: Call `get_attibuteid(entity, field)`
 3. **Get Dependencies**: Call `get_dependencylist_for_attribute(attributeid)`
 4. **Filter Workflows**: Call `retrieve_only_workflowdependency(dependencylist)`
-5. **Save to File**: Call `create_businessrule_file(workflowlist)`
+5. **Save to File**: Call `create_workflow_file(workflowlist)` → generates `wf.txt`
 6. **Analyze with RAG**: Initialize `DataverseWorkflowRAG()` and call `find_set_value_workflows(fieldname)` or `find_workflows_by_type(fieldname, category)`
+
+### Web Resource Analysis
+
+1. **Authenticate**: Create `ConnectToDataverse` instance
+2. **Get Entity Forms**: Call `get_forms_for_entity(entityname)`
+3. **Get Form Dependencies**: Call `get_dependencylist_for_form(formslist)`
+4. **Filter Web Resources**: Call `retrieve_webresources_from_dependency(deplistform)`
+5. **Save to File**: Call `create_webresourceflow_file(webreslist)` → generates `webre.txt`
+6. **Analyze with RAG**: Initialize `DataverseWebResourceRAG()` and call `find_setvalue_webresources(fieldname)`
 
 ## Coding Standards
 
@@ -230,11 +320,23 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 
 ### Extending RAG Analysis
 
+**For Workflows** (`workflow_rag.py`):
+
 1. Add new action keywords to `ACTION_KEYWORDS` dict in `DataverseWorkflowRAG`
 2. Create new extraction methods following `_extract_attributes_*` pattern
 3. Add metadata fields to `_preprocess_workflows()` method
 4. Create query methods like `find_set_value_workflows()` or `find_workflows_by_type()` for specific use cases
 5. Use `_get_workflow_type()` to get human-readable workflow types from category numbers
+
+**For Web Resources** (`webresource_rag.py`):
+
+1. Add new action keywords to `ACTION_KEYWORDS` dict in `DataverseWebResourceRAG`
+2. Create new JavaScript extraction methods following `_extract_fields_*` pattern
+3. Add new regex patterns to `_extract_fields_modified()` for additional JavaScript patterns
+4. Add metadata fields to `_preprocess_webresources()` method
+5. Create query methods like `find_setvalue_webresources()` for specific use cases
+6. Important: Use `\s*` in regex patterns to handle optional whitespace
+7. Important: Support `var`, `let`, and `const` for variable declarations
 
 ### Adding New Entity Types
 
@@ -263,10 +365,15 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 ## Important Notes
 
 - **XAML Structure**: Microsoft Dataverse business rules use proprietary XAML schema
-- **Component Types**: Type 29 = workflows (includes business rules, cloud flows, etc.)
+- **Component Types**: Type 29 = workflows (includes business rules, cloud flows, etc.), Type 61 = web resources
 - **Categories**: Category 2 = business rule, Category 0 = workflow/cloud flow
 - **State Codes**: 0 = draft, 1 = activated
 - **Google API Key**: Required in environment for Gemini LLM - set `GOOGLE_API_KEY`
+- **JavaScript Patterns**: Power Platform Client API uses formContext object (modern) and Xrm.Page (deprecated)
+- **Case Sensitivity**: Field names in JavaScript are case-sensitive - regex patterns preserve this
+- **Whitespace Handling**: Web resource RAG uses `\s*` in regex to handle formatting variations
+- **Variable Declarations**: Support `var`, `let`, and `const` for JavaScript variable assignments
+- **Separate Indices**: Workflows use `./storage/` directory, web resources use `./storage_webres/` directory
 
 ## References
 
