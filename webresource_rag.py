@@ -291,12 +291,6 @@ ACTION DETAILS:
                 f"Failed to execute query '{question}': {str(e)}. "
                 f"This may be due to Google API issues or an invalid query."
             ) from e
-            
-        Returns:
-            Answer based on the indexed web resource JavaScript
-        """
-        response = self.query_engine.query(question)
-        return str(response)
     
     def find_setvalue_webresources(self, fieldname: str) -> str:
         """
