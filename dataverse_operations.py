@@ -56,3 +56,57 @@ class DataverseOperations:
                 workflowlist.append(workflow_data)
 
         return workflowlist
+    
+    def get_forms_for_entity(self, entityname:str):
+        forms = requests.get(f"{self.dataverse_envurl}api/data/v9.2/systemforms?$filter=objecttypecode eq '{entityname}' and (type eq 2 or type eq 6)&$select=formid,name,type,formxml",
+                           headers={
+                               'Accept': 'application/json',
+                               'OData-MaxVersion': '4.0',
+                               'OData-Version': '4.0',
+                               'Authorization': f'Bearer {self.token}'
+                           })
+        
+        formslist = forms.json().get('value')
+        
+        return formslist
+    
+    def get_dependencylist_for_form(self, formids:list):
+        dependencylist = []
+        
+        for formid in formids:
+            dependency = requests.get(f"{self.dataverse_envurl}api/data/v9.2/RetrieveDependenciesForDelete(ObjectId={formid},ComponentType=24)",
+                               headers={
+                                   'Accept': 'application/json',
+                                   'OData-MaxVersion': '4.0',
+                                   'OData-Version': '4.0',
+                                   'Authorization': f'Bearer {self.token}'
+                               })
+
+            dependency_data = dependency.json()
+            if 'value' in dependency_data:
+                dependencylist.extend(dependency_data.get('value'))
+
+        return dependencylist
+    
+    def retrieve_webresources_from_dependency(self, dependencylist):
+        filter_for_webresource = (depen for depen in dependencylist.get('value') if depen.get('dependentcomponenttype')==61)
+        webresourceids = []
+        webresourcelist = []
+        
+        for dep in filter_for_webresource:
+            id = dep.get('dependentcomponentobjectid')
+            webresourceids.append(id)
+
+        for webresourceid in webresourceids:
+            webresource = requests.get(f"{self.dataverse_envurl}api/data/v9.2/webresourceset({webresourceid})?$select=name,webresourcetype,content",
+                           headers={
+                               'Accept': 'application/json',
+                               'OData-MaxVersion': '4.0',
+                               'OData-Version': '4.0',
+                               'Authorization': f'Bearer {self.token}'
+                           })
+            
+            webresource_data = webresource.json()
+            webresourcelist.append(webresource_data)
+
+        return webresourcelist
