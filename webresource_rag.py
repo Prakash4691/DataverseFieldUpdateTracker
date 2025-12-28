@@ -69,8 +69,16 @@ class DataverseWebResourceRAG:
     def _extract_fields_modified(self, js_code: str) -> List[str]:
         """
         Extract field names being modified with setValue operations.
-        Detects both direct chained calls and variable assignments.
-        Case-sensitive matching.
+        
+        Detects setValue() calls on fields through multiple patterns including direct chained calls
+        (formContext.getAttribute().setValue()), variable assignments, and deprecated Xrm.Page syntax.
+        Uses case-sensitive matching.
+        
+        Args:
+            js_code (str): The JavaScript code content to analyze.
+        
+        Returns:
+            List[str]: Unique list of field names being modified via setValue() operations.
         """
         fields_modified = []
         

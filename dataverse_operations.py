@@ -161,8 +161,24 @@ class DataverseOperations:
     
     def get_dependencylist_for_form(self, formids:list):
         """
-        Parse FormXML directly to find web resource references
-        This is more reliable than querying the dependency table
+        Parse FormXML directly to find web resource references.
+        
+        This method retrieves form metadata and extracts web resource references from FormXML
+        by searching for Library, WebResource, and src attributes. This approach is more reliable
+        than querying the dependency table.
+        
+        Args:
+            formids (list): List of form GUIDs to analyze.
+        
+        Returns:
+            list: List of dictionaries, each containing:
+                - formid: The form GUID
+                - webresourcename: The name of the referenced web resource
+        
+        Example:
+            >>> ops = DataverseOperations()
+            >>> form_ids = ops.get_forms_for_entity('account')
+            >>> web_refs = ops.get_dependencylist_for_form(form_ids)
         """
         webresource_references = []
         
@@ -205,8 +221,26 @@ class DataverseOperations:
     
     def retrieve_webresources_from_dependency(self, webresource_references):
         """
-        Now accepts web resource references parsed from FormXML
-        Decodes base64 content to get actual web resource content
+        Retrieve and decode web resource content from references parsed from FormXML.
+        
+        Accepts web resource references, queries Dataverse for each web resource by name,
+        and decodes base64-encoded content. Only processes JavaScript files (webresourcetype = 3).
+        
+        Args:
+            webresource_references (list): List of dictionaries containing:
+                - formid: The form GUID
+                - webresourcename: The name of the web resource to retrieve
+        
+        Returns:
+            list: List of dictionaries, each containing:
+                - name: Web resource name
+                - id: Web resource GUID
+                - decoded_content: Decoded JavaScript content (UTF-8 string)
+        
+        Example:
+            >>> ops = DataverseOperations()
+            >>> web_refs = ops.get_dependencylist_for_form(form_ids)
+            >>> web_resources = ops.retrieve_webresources_from_dependency(web_refs)
         """
         import base64
         
