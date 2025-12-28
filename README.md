@@ -37,6 +37,7 @@ A Python-based tool for tracking field updates in Microsoft Dataverse by analyzi
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   export GOOGLE_API_KEY=<your-google-gemini-api-key>
    ```
 
 3. Install dependencies
@@ -74,8 +75,12 @@ A Python-based tool for tracking field updates in Microsoft Dataverse by analyzi
 5. Run the tool
 
    ```bash
-   # Basic usage with hardcoded entity/field
+   # Interactive mode (prompts for entity and field names)
    python3 main.py
+
+   # Command-line arguments
+   python3 main.py --entity account --attribute name
+   python3 main.py --entity your_entity --attribute your_field
 
    # Example usage with RAG analysis
    python3 example_usage.py
@@ -83,8 +88,8 @@ A Python-based tool for tracking field updates in Microsoft Dataverse by analyzi
 
 6. Expected output
    - Creates `wf.txt` with workflow metadata
-   - Creates `./storage/` directory with vector index
-   - Prints analysis results showing which workflows modify the specified field
+   - Creates `webre.txt` with web resource metadata
+   - Prints analysis results showing which workflows or webresource modified the specified field
 
 ## Tech Stack
 
@@ -106,19 +111,49 @@ dataverse-field-update-tracker/
 ├── file_operations.py            # File I/O for workflow and web resource metadata
 ├── workflow_rag.py               # RAG system for XAML analysis using LlamaIndex
 ├── webresource_rag.py            # RAG system for JavaScript web resource analysis
-├── main.py                       # Main script for retrieving and saving workflow/webresource data
+├── main.py                       # Main CLI application with argument parsing
 ├── example_usage.py              # Example of RAG analysis usage (workflows + web resources)
 ├── requirements.txt              # Python dependencies
-├── pyproject.toml               # Project metadata
-├── AGENTS.md                    # Detailed coding agent instructions
-├── README.md                    # This file
-├── .env                         # Environment variables (NOT in git)
-├── .gitignore                   # Git ignore rules
-├── wf.txt                       # Generated workflow metadata (created at runtime)
-└── webre.txt                    # Generated web resource metadata (created at runtime)
+├── pyproject.toml                # Project metadata
+├── AGENTS.md                     # Detailed coding agent instructions
+├── ERROR_HANDLING.md             # Error handling guide and best practices
+├── README.md                     # This file
+├── .env                          # Environment variables (NOT in git)
+├── .env.example                  # Template for environment configuration
+├── .gitignore                    # Git ignore rules
+├── wf.txt                        # Generated workflow metadata (created at runtime)
+└── webre.txt                     # Generated web resource metadata (created at runtime)
 ```
 
 ## Usage Examples
+
+### Using the CLI Application
+
+The simplest way to use the tool is through the command-line interface:
+
+```bash
+# Interactive mode (prompts for input)
+python3 main.py
+
+# Command-line arguments
+python3 main.py --entity account --attribute name
+python3 main.py --entity contact --attribute emailaddress1
+```
+
+### Programmatic Usage with DataverseFieldUpdateTrackerApp
+
+```python
+from main import DataverseFieldUpdateTrackerApp
+
+# Initialize and run the complete workflow
+app = DataverseFieldUpdateTrackerApp()
+app.run('account', 'name')
+
+# This will:
+# 1. Retrieve workflows and web resources for the specified field
+# 2. Generate wf.txt and webre.txt files
+# 3. Perform RAG analysis and print results
+```
 
 ### Basic Workflow Retrieval
 
@@ -130,7 +165,8 @@ from file_operations import ImplementationDefinitionFileOperations
 dvoperation = DataverseOperations()
 
 # Get attribute ID for a specific field
-attributeid = dvoperation.get_attibuteid('entityname', 'fieldname')
+# Replace 'account' and 'name' with your entity and field logical names
+attributeid = dvoperation.get_attibuteid('account', 'name')
 
 # Retrieve all dependencies for the attribute
 deplist = dvoperation.get_dependencylist_for_attribute(attributeid)
@@ -148,19 +184,19 @@ ImplementationDefinitionFileOperations.create_workflow_file(wflist)
 from workflow_rag import root_agent
 
 # Find all workflows that SET/modify a specific field
-result = root_agent.find_set_value_workflows('cr5b9_attribmeta')
+result = root_agent.find_set_value_workflows('your_field_name')
 print(result)
 
 # Find workflows by type (Business Rules only)
-result = root_agent.find_workflows_by_type('cr5b9_attribmeta', category=2)
+result = root_agent.find_workflows_by_type('your_field_name', category=2)
 print(result)
 
 # Find workflows by type (Classic Workflows only)
-result = root_agent.find_workflows_by_type('cr5b9_attribmeta', category=0)
+result = root_agent.find_workflows_by_type('your_field_name', category=0)
 print(result)
 
 # General query about field updates
-result = root_agent.query("Which workflows read the cr5b9_attribmeta field?")
+result = root_agent.query("Which workflows read the your_field_name field?")
 print(result)
 ```
 
@@ -170,16 +206,16 @@ print(result)
 from webresource_rag import webresource_agent
 
 # Find all web resources that use setValue() on a specific field
-result = webresource_agent.find_setvalue_webresources('cr5b9_attribmeta')
+result = webresource_agent.find_setvalue_webresources('your_field_name')
 print(result)
-# Output: Name: cr5b9_Test, ID: 6638c539-760a-ec11-b6e6-6045bd72f201
+# Output example: Name: your_webresource, ID: 6638c539-760a-ec11-b6e6-6045bd72f201
 
 # Analyze all field updates in web resources
 result = webresource_agent.analyze_field_updates()
 print(result)
 
 # Get details about a specific web resource
-result = webresource_agent.get_webresource_by_name('cr5b9_Test')
+result = webresource_agent.get_webresource_by_name('your_webresource_name')
 print(result)
 ```
 
@@ -223,9 +259,13 @@ self.llm = GoogleGenAI(model="gemini-2.5-flash", temperature=0.1)
 # Change to: gemini-pro, gemini-2.0-flash, etc.
 ```
 
-**Change entity/field to analyze** (in `main.py`):
+**Change entity/field to analyze**:
 
-```python
+```bash
+# Use command-line arguments
+python3 main.py --entity your_entity --attribute your_field
+
+# Or in code (dataverse_operations.py)
 attributeid = dvoperation.get_attibuteid('your_entity', 'your_field')
 ```
 
@@ -294,6 +334,36 @@ Each workflow is indexed with:
 
 ## API Documentation
 
+### DataverseFieldUpdateTrackerApp Class
+
+Main application class that orchestrates the complete workflow.
+
+#### `__init__(dv_ops: DataverseOperations | None = None)`
+
+Initializes the application with optional dependency injection for testing.
+
+**Parameters:**
+
+- `dv_ops`: Optional DataverseOperations instance (defaults to new instance)
+
+#### `run(entityname: str, attributename: str) -> None`
+
+Executes the complete workflow: data retrieval, file generation, and RAG analysis.
+
+**Parameters:**
+
+- `entityname`: Logical name of the entity (e.g., "account", "contact")
+- `attributename`: Logical name of the attribute (e.g., "name", "emailaddress1")
+
+**Example:**
+
+```python
+from main import DataverseFieldUpdateTrackerApp
+
+app = DataverseFieldUpdateTrackerApp()
+app.run('account', 'name')
+```
+
 ### DataverseOperations Class
 
 #### `get_attibuteid(entityname: str, attributename: str) -> str`
@@ -302,8 +372,8 @@ Retrieves the MetadataId (GUID) of a specific attribute.
 
 **Parameters:**
 
-- `entityname`: Logical name of the entity (e.g., "account", "cr5b9_test1")
-- `attributename`: Logical name of the attribute (e.g., "name", "cr5b9_attribmeta")
+- `entityname`: Logical name of the entity (e.g., "account", "contact", "your_custom_entity")
+- `attributename`: Logical name of the attribute (e.g., "name", "emailaddress1", "your_custom_field")
 
 **Returns:** Attribute GUID as string
 
@@ -335,7 +405,7 @@ Filters dependencies to return only workflows and business rules.
 
 **Parameters:**
 
-- `fieldname`: Name of the field to search (e.g., "cr5b9_attribmeta")
+- `fieldname`: Name of the field to search (e.g., "name", "emailaddress1", "your_custom_field")
 
 **Returns:** LLM-generated list with workflow type, names, and IDs
 
@@ -347,7 +417,7 @@ Filters dependencies to return only workflows and business rules.
 
 **Parameters:**
 
-- `fieldname`: Name of the field to search (e.g., "cr5b9_attribmeta") - case-sensitive
+- `fieldname`: Name of the field to search (e.g., "name", "emailaddress1", "your_custom_field") - case-sensitive
 
 **Returns:** LLM-generated response with web resource names and IDs, or "No webresources found"
 
@@ -372,7 +442,7 @@ Retrieve details about a specific web resource by name.
 
 **Parameters:**
 
-- `name`: Name of the web resource (e.g., "cr5b9_Test")
+- `name`: Name of the web resource (e.g., "prefix_WebResourceName")
 
 **Returns:** LLM-generated description with ID and all fields modified
 
