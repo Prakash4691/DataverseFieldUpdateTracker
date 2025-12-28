@@ -37,7 +37,8 @@ A Python-based tool for tracking field updates in Microsoft Dataverse by analyzi
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   export GOOGLE_API_KEY=<your-google-gemini-api-key>
+   macOS/Linux (Bash/Zsh): export GOOGLE_API_KEY=<your-google-gemini-api-key>
+   Windows (Command Prompt): set GOOGLE_API_KEY=<your-google-gemini-api-key>
    ```
 
 3. Install dependencies
@@ -89,7 +90,7 @@ A Python-based tool for tracking field updates in Microsoft Dataverse by analyzi
 6. Expected output
    - Creates `wf.txt` with workflow metadata
    - Creates `webre.txt` with web resource metadata
-   - Prints analysis results showing which workflows or webresource modified the specified field
+   - Prints analysis results showing which workflows or web resource modified the specified field
 
 ## Tech Stack
 
