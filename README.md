@@ -1,14 +1,16 @@
 # Dataverse Field Update Tracker
 
-A Python-based tool for tracking field updates in Microsoft Dataverse by analyzing business rules and classic workflows. Uses RAG (Retrieval-Augmented Generation) with Google Gemini AI to intelligently identify which business rules and workflows modify specific fields.
+A Python-based tool for tracking field updates in Microsoft Dataverse by analyzing business rules, classic workflows, and web resources. Uses RAG (Retrieval-Augmented Generation) with Google Gemini AI to intelligently identify which business rules, workflows, and JavaScript web resources modify specific fields.
 
 ## Features
 
 - **Automated Field Dependency Tracking** - Retrieves attribute dependencies from Dataverse
 - **Business Rule Analysis** - Analyzes business rule XAML to identify field updates
 - **Classic Workflow Analysis** - Supports classic workflows (category=0) in addition to business rules (category=2)
+- **Web Resource JavaScript Analysis** - Detects setValue operations in form scripts and web resources
 - **RAG-Powered Intelligence** - Uses LlamaIndex and Google Gemini to extract field update patterns
 - **XAML Action Detection** - Identifies SET_VALUE, SET_DEFAULT, GET_VALUE, UPDATE_ENTITY, and more
+- **JavaScript Pattern Detection** - Detects formContext.getAttribute().setValue(), variable assignments, and deprecated patterns
 - **Metadata-Based Filtering** - Query specific workflow types or field modifications
 - **OAuth2 Authentication** - Secure connection to Dataverse using Azure service principal
 
@@ -100,18 +102,20 @@ A Python-based tool for tracking field updates in Microsoft Dataverse by analyzi
 ```
 dataverse-field-update-tracker/
 ├── connect_to_dataverse.py       # Handles Azure authentication and Dataverse connection
-├── dataverse_operations.py       # Core Dataverse API operations (get attributes, dependencies)
-├── file_operations.py            # File I/O for workflow metadata
+├── dataverse_operations.py       # Core Dataverse API operations (get attributes, dependencies, web resources)
+├── file_operations.py            # File I/O for workflow and web resource metadata
 ├── workflow_rag.py               # RAG system for XAML analysis using LlamaIndex
-├── main.py                       # Main script for retrieving and saving workflow data
-├── example_usage.py              # Example of RAG analysis usage
+├── webresource_rag.py            # RAG system for JavaScript web resource analysis
+├── main.py                       # Main script for retrieving and saving workflow/webresource data
+├── example_usage.py              # Example of RAG analysis usage (workflows + web resources)
 ├── requirements.txt              # Python dependencies
 ├── pyproject.toml               # Project metadata
 ├── AGENTS.md                    # Detailed coding agent instructions
 ├── README.md                    # This file
 ├── .env                         # Environment variables (NOT in git)
 ├── .gitignore                   # Git ignore rules
-└── wf.txt                       # Generated workflow metadata (created at runtime)
+├── wf.txt                       # Generated workflow metadata (created at runtime)
+└── webre.txt                    # Generated web resource metadata (created at runtime)
 ```
 
 ## Usage Examples
@@ -160,17 +164,42 @@ result = root_agent.query("Which workflows read the cr5b9_attribmeta field?")
 print(result)
 ```
 
+### RAG Analysis of Web Resources
+
+```python
+from webresource_rag import webresource_agent
+
+# Find all web resources that use setValue() on a specific field
+result = webresource_agent.find_setvalue_webresources('cr5b9_attribmeta')
+print(result)
+# Output: Name: cr5b9_Test, ID: 6638c539-760a-ec11-b6e6-6045bd72f201
+
+# Analyze all field updates in web resources
+result = webresource_agent.analyze_field_updates()
+print(result)
+
+# Get details about a specific web resource
+result = webresource_agent.get_webresource_by_name('cr5b9_Test')
+print(result)
+```
+
 ### Refreshing the Index
 
 ```python
-# After updating wf.txt, refresh the vector index
+# After updating wf.txt, refresh the workflow vector index
 # Note: Delete ./storage folder to force complete re-indexing
 import shutil
 shutil.rmtree('./storage')
 
+# After updating webre.txt, refresh the web resource vector index
+shutil.rmtree('./storage_webres')
+
 # Then re-run the RAG analysis
 from workflow_rag import root_agent
-result = root_agent.find_set_value_workflows('your_field_name')
+from webresource_rag import webresource_agent
+
+workflow_result = root_agent.find_set_value_workflows('your_field_name')
+webres_result = webresource_agent.find_setvalue_webresources('your_field_name')
 ```
 
 ## Configuration
@@ -226,10 +255,16 @@ custom_rag = DataverseWorkflowRAG(persist_dir="./custom_storage")
    - Extracts workflow metadata including XAML definitions
    - Writes to `wf.txt` for RAG indexing
 
-4. **RAG Analysis Layer** (`workflow_rag.py`)
-   - Parses workflow XAML to extract actions and field references
-   - Creates structured metadata: workflow name, ID, category, actions, modified/read attributes
-   - Builds vector index using Google embeddings
+4. **RAG Analysis Layer** (`workflow_rag.py` and `webresource_rag.py`)
+   - **Workflows**: Parses workflow XAML to extract actions and field references
+   - **Web Resources**: Parses JavaScript code to detect setValue operations using regex patterns
+   - Creates structured metadata: name, ID, actions, modified/read attributes
+   - Detects multiple JavaScript patterns:
+     - Direct chained calls: `formContext.getAttribute("field").setValue()`
+     - Variable assignments: `let ctrl = formContext.getAttribute("field"); ctrl.setValue()`
+     - Deprecated patterns: `Xrm.Page.getAttribute("field").setValue()`
+     - Optional whitespace handling for formatting variations
+   - Builds vector indices using Google embeddings (separate indices for workflows and web resources)
    - Enables natural language queries via LlamaIndex + Gemini LLM
 
 ### XAML Actions Detected
@@ -303,6 +338,43 @@ Filters dependencies to return only workflows and business rules.
 - `fieldname`: Name of the field to search (e.g., "cr5b9_attribmeta")
 
 **Returns:** LLM-generated list with workflow type, names, and IDs
+
+### DataverseWebResourceRAG Class
+
+#### `find_setvalue_webresources(fieldname: str) -> str`
+
+**Primary method** - Finds all web resources that use setValue() to modify a specific field. Supports case-sensitive field name matching.
+
+**Parameters:**
+
+- `fieldname`: Name of the field to search (e.g., "cr5b9_attribmeta") - case-sensitive
+
+**Returns:** LLM-generated response with web resource names and IDs, or "No webresources found"
+
+**JavaScript Patterns Detected:**
+
+- `formContext.getAttribute("field").setValue()`
+- `formContext.getControl("field").setValue()`
+- `Xrm.Page.getAttribute("field").setValue()` (deprecated)
+- `let/var/const ctrl = formContext.getAttribute("field"); ctrl.setValue()`
+- `executionContext.getFormContext().getAttribute("field").setValue()`
+- Handles optional whitespace between method calls
+
+#### `analyze_field_updates() -> str`
+
+Identifies all field updates across all web resources.
+
+**Returns:** LLM-generated summary of all fields modified with setValue()
+
+#### `get_webresource_by_name(name: str) -> str`
+
+Retrieve details about a specific web resource by name.
+
+**Parameters:**
+
+- `name`: Name of the web resource (e.g., "cr5b9_Test")
+
+**Returns:** LLM-generated description with ID and all fields modified
 
 #### `find_workflows_by_type(fieldname: str, category: int) -> str`
 
@@ -394,9 +466,12 @@ pip install -r requirements.txt --upgrade
 - [ ] Add unit tests and integration tests
 - [ ] Performance optimization for large XAML files
 - [ ] Web UI for non-technical users
+- [ ] Ribbon command JavaScript analysis
+- [ ] PCF control custom code analysis
 - [x] Business rule analysis (completed)
 - [x] Classic workflow support (completed)
 - [x] RAG-based field update detection (completed)
+- [x] Web resource JavaScript analysis (completed)
 
 ## Contributing
 
