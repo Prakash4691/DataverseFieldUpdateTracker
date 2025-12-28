@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This is a Python-based tool for tracking field updates in Microsoft Dataverse by analyzing business rules and workflows. The tool retrieves attribute dependencies, extracts workflow XAML definitions, and uses RAG (Retrieval-Augmented Generation) with Google Gemini AI to analyze which business rules modify specific fields.
+This is a Python-based tool for tracking field updates in Microsoft Dataverse by analyzing business rules and classic workflows. The tool retrieves attribute dependencies, extracts workflow XAML definitions, and uses RAG (Retrieval-Augmented Generation) with Google Gemini AI to analyze which business rules and workflows modify specific fields. Supports both Business Rules (category=2) and Classic Workflows (category=0).
 
 ## Tech Stack
 
@@ -21,7 +21,7 @@ dataverse-field-update-tracker/
 ├── connect_to_dataverse.py      # Dataverse authentication handler
 ├── dataverse_operations.py      # Core Dataverse API operations
 ├── file_operations.py           # File I/O for business rule data
-├── businessrule_rag_cp.py       # RAG system for XAML analysis
+├── businessrule_rag_cp.py       # RAG system for XAML analysis (business rules + workflows)
 ├── requirements.txt             # Python dependencies
 ├── pyproject.toml              # Project metadata
 ├── .env                        # Environment variables (NOT in git)
@@ -38,12 +38,14 @@ dataverse-field-update-tracker/
 **Purpose**: Authenticate to Microsoft Dataverse using Azure service principal credentials.
 
 **Key Details**:
+
 - Uses `ClientSecretCredential` from `azure.identity`
 - Reads credentials from `.env` file: `client_id`, `tenant_id`, `client_secret`, `env_url`
 - Acquires OAuth2 access token via `DataverseClient.auth._acquire_token()`
 - Exposes `self.token` and `self.dataverse_envurl` for use in API calls
 
 **Environment Variables Required**:
+
 ```
 client_id=<Azure AD application client ID>
 tenant_id=<Azure AD tenant ID>
@@ -58,27 +60,25 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 **Methods**:
 
 - `get_attibuteid(entityname: str, attributename: str) -> str`
+
   - Retrieves the MetadataId of a specific attribute/field
   - Uses OData Web API: `EntityDefinitions(LogicalName='{entityname}')/Attributes`
   - Returns: attribute GUID
 
 - `get_dependencylist_for_attribute(attributeid: str) -> dict`
+
   - Retrieves all dependencies for an attribute
   - Uses: `RetrieveDependenciesForDelete` function
   - Returns: full dependency JSON response
 
-- `retrieve_only_businessruledependency(dependencylist: dict) -> list`
-  - Filters dependencies for business rules only
-  - Filters: `dependentcomponenttype==29` (workflow), `dependencytype==2` (internal)
-  - Additional filter: `category eq 2` (business rule), `statecode eq 1` (activated)
-  - Returns: list of workflow metadata dicts
-
 - `retrieve_only_workflowdependency(dependencylist: dict) -> list`
-  - Filters dependencies for workflows/cloud flows
-  - Filters: `dependentcomponenttype==29`, `category eq 0` (workflow), `statecode eq 1`
+
+  - Filters dependencies for workflows or business rules
+  - Filters: `dependentcomponenttype==29`, `category eq 0 or category eq 2` (workflow or businessrule), `statecode eq 1`
   - Returns: list of workflow metadata dicts
 
 **API Patterns**:
+
 - All requests use OData v4.0 protocol
 - Headers required: `Accept: application/json`, `OData-MaxVersion: 4.0`, `OData-Version: 4.0`, `Authorization: Bearer {token}`
 - Base URL format: `{env_url}api/data/v9.2/`
@@ -88,19 +88,21 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 **Class**: `ImplementationDefinitionFileOperations`
 
 **Method**:
+
 - `create_businessrule_file(workflowlist: list) -> None`
-  - Writes workflow metadata to `br.txt`
+  - Writes workflow metadata to `wf.txt`
   - Filters out OData metadata keys (keys containing '@')
   - Format: Each workflow dict on a new line as string representation
 
-### 4. RAG System (`businessrule_rag_cp.py`)
+### 4. RAG System (`workflow_rag.py`)
 
-**Class**: `DataverseWorkflowRAGCP`
+**Class**: `DataverseWorkflowRAG`
 
-**Purpose**: Analyze workflow XAML files using RAG to identify field updates and business logic.
+**Purpose**: Analyze workflow XAML files using RAG to identify field updates and business logic. Supports both Business Rules (category=2) and Classic Workflows (category=0).
 
 **Key Features**:
-- **XAML Action Detection**: Identifies SET_VALUE, SET_DEFAULT, GET_VALUE, SET_DISPLAY_MODE, SHOW_HIDE, LOCK_UNLOCK actions
+
+- **XAML Action Detection**: Identifies SET_VALUE, SET_DEFAULT, GET_VALUE, SET_DISPLAY_MODE, SHOW_HIDE, LOCK_UNLOCK, UPDATE_ENTITY actions
 - **Attribute Extraction**:
   - Modified attributes: Fields being SET (SetEntityProperty, SetAttributeValue)
   - Read attributes: Fields being GET (GetEntityProperty)
@@ -109,39 +111,58 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 
 **Methods**:
 
-- `__init__(workflow_file='./br.txt', persist_dir='./storage')`
+- `__init__(workflow_file='./wf.txt', persist_dir='./storage')`
+
   - Initializes LLM (Gemini 2.5 Flash) and embeddings (text-embedding-004)
   - Loads or creates vector index
 
 - `_extract_xaml_actions(xaml: str) -> List[str]`
+
   - Detects action keywords in XAML
 
 - `_extract_attributes_modified(xaml: str) -> List[str]`
+
   - Regex: `<mxswa:SetEntityProperty[^>]+Attribute="([^"]+)"`
   - Returns unique field names being modified
 
 - `_extract_attributes_read(xaml: str) -> List[str]`
+
   - Regex: `<mxswa:GetEntityProperty[^>]+Attribute="([^"]+)"`
   - Returns unique field names being read
 
+- `_get_workflow_type(category: int) -> str`
+
+  - Maps category number to human-readable workflow type
+  - Returns: "Business Rule" for category=2, "Classic Workflow" for category=0
+
 - `find_set_value_workflows(fieldname: str) -> str`
-  - **Most Important Method**: Finds all business rules that SET/modify a specific field
+
+  - **Most Important Method**: Finds all business rules AND classic workflows that SET/modify a specific field
   - Uses metadata filters: `modified_attributes` CONTAINS fieldname AND `has_set_value` EQ True
-  - Returns: LLM-generated list of workflow names and IDs
+  - Returns: LLM-generated list with workflow type, names, and IDs
+
+- `find_workflows_by_type(fieldname: str, category: int) -> str`
+
+  - Finds workflows of a specific type that modify a field
+  - category: 0 for Classic Workflows, 2 for Business Rules
+  - Returns: LLM-generated list of workflow names and IDs for the specified type
 
 - `analyze_field_updates() -> str`
+
   - Identifies all field updates across all workflows
 
 - `query(question: str) -> str`
   - General natural language query interface
 
 **Metadata Structure**:
+
 ```python
 {
     'workflow_name': str,
     'workflow_id': str,
-    'category': str,  # "2" = business rule, "0" = workflow
-    'actions': str,  # pipe-separated action types
+    'category': str,  # "2" = business rule, "0" = classic workflow
+    'workflow_type': str,  # "Business Rule" or "Classic Workflow"
+    'actions': str,  # pipe-separated action types (includes UPDATE_ENTITY for workflows)
     'modified_attributes': str,  # pipe-separated field names
     'read_attributes': str,  # pipe-separated field names
     'has_set_value': str  # "True" or "False"
@@ -153,30 +174,34 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 1. **Authenticate**: Create `ConnectToDataverse` instance
 2. **Get Attribute ID**: Call `get_attibuteid(entity, field)`
 3. **Get Dependencies**: Call `get_dependencylist_for_attribute(attributeid)`
-4. **Filter Business Rules**: Call `retrieve_only_businessruledependency(dependencylist)`
+4. **Filter Workflows**: Call `retrieve_only_workflowdependency(dependencylist)`
 5. **Save to File**: Call `create_businessrule_file(workflowlist)`
-6. **Analyze with RAG**: Initialize `DataverseWorkflowRAGCP()` and call `find_set_value_workflows(fieldname)`
+6. **Analyze with RAG**: Initialize `DataverseWorkflowRAG()` and call `find_set_value_workflows(fieldname)` or `find_workflows_by_type(fieldname, category)`
 
 ## Coding Standards
 
 ### Code Style
+
 - Use classes for logical grouping of related functionality
 - Follow PEP 8 naming conventions (snake_case for functions/variables)
 - Type hints are used sparingly but should be added for public methods
 - Keep methods focused and single-purpose
 
 ### Error Handling
+
 - Currently minimal error handling - improvements needed
 - Consider adding try-except blocks for API calls
 - Validate environment variables exist before use
 - Handle missing keys in API responses gracefully
 
 ### Security
+
 - Never commit `.env` file (already in `.gitignore`)
 - Access tokens should not be logged or printed
 - Client secrets must remain confidential
 
 ### Dependencies
+
 - Install via: `pip install -r requirements.txt`
 - Key packages:
   - `llama-index` - RAG framework core
@@ -189,6 +214,7 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
   - `PowerPlatform-Dataverse` - Dataverse client SDK
 
 ### API Considerations
+
 - **Rate Limiting**: Dataverse API has service protection limits
 - **Token Expiration**: Access tokens expire after 1 hour - no refresh logic currently
 - **OData Syntax**: Use `$select`, `$filter`, `$expand` carefully
@@ -197,22 +223,27 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 ## Common Tasks for Agents
 
 ### Adding New Dataverse Operations
+
 1. Add method to `DataverseOperations` class
 2. Follow existing pattern: construct URL, set headers, make request, parse JSON
 3. Use `self.dataverse_envurl` and `self.token` from parent class
 
 ### Extending RAG Analysis
-1. Add new action keywords to `ACTION_KEYWORDS` dict in `DataverseWorkflowRAGCP`
+
+1. Add new action keywords to `ACTION_KEYWORDS` dict in `DataverseWorkflowRAG`
 2. Create new extraction methods following `_extract_attributes_*` pattern
 3. Add metadata fields to `_preprocess_workflows()` method
-4. Create query methods like `find_set_value_workflows()` for specific use cases
+4. Create query methods like `find_set_value_workflows()` or `find_workflows_by_type()` for specific use cases
+5. Use `_get_workflow_type()` to get human-readable workflow types from category numbers
 
 ### Adding New Entity Types
+
 1. Update component type filters in `retrieve_only_*dependency` methods
 2. Reference: Dataverse component types (29=workflow, 2=attribute, etc.)
 3. See Microsoft docs for complete list
 
 ### Improving Error Handling
+
 1. Add validation in `ConnectToDataverse.__init__()` for missing env vars
 2. Add response status code checks in API calls
 3. Add retry logic for transient failures
@@ -227,7 +258,7 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 5. **Documentation**: Missing docstrings in many methods
 6. **Type Hints**: Inconsistent usage of type hints
 7. **Missing Dependencies**: `azure-identity` and `PowerPlatform-Dataverse` not in requirements.txt
-8. **Hard-coded Values**: File names like 'br.txt' and 'storage/' are hard-coded
+8. **Hard-coded Values**: File names like 'wf.txt' and 'storage/' are hard-coded
 
 ## Important Notes
 
@@ -248,6 +279,7 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 ## Questions or Issues?
 
 When working on this codebase:
+
 1. Check `.env` for correct Dataverse environment URL and credentials
 2. Ensure all dependencies are installed: `pip install -r requirements.txt`
 3. Verify Python version compatibility (3.8+)
