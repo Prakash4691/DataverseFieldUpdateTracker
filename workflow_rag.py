@@ -44,21 +44,41 @@ class DataverseWorkflowRAG:
         self.workflow_file = workflow_file
         self.persist_dir = persist_dir
         
-        # Configure Google Gemini LLM and embeddings
-        self.llm = GoogleGenAI(model="gemini-2.5-flash", temperature=0.1)
-        self.embed_model = GoogleGenAIEmbedding(model="models/text-embedding-004")
+        # Validate Google API key is set
+        if not os.environ.get('GOOGLE_API_KEY'):
+            raise ValueError(
+                "GOOGLE_API_KEY environment variable is not set. "
+                "Please set it in your .env file or environment."
+            )
         
-        # Set global settings
-        Settings.llm = self.llm
-        Settings.embed_model = self.embed_model
+        # Validate workflow file exists
+        if not os.path.exists(workflow_file):
+            raise FileNotFoundError(
+                f"Workflow file not found: {workflow_file}. "
+                f"Please run the data retrieval script first to generate this file."
+            )
         
-        # Load or create index
-        self.index = self._load_or_create_index()
-        self.query_engine = self.index.as_query_engine(
-            llm=self.llm,
-            similarity_top_k=3,
-            response_mode="compact"
-        )
+        try:
+            # Configure Google Gemini LLM and embeddings
+            self.llm = GoogleGenAI(model="gemini-2.5-flash", temperature=0.1)
+            self.embed_model = GoogleGenAIEmbedding(model="models/text-embedding-004")
+            
+            # Set global settings
+            Settings.llm = self.llm
+            Settings.embed_model = self.embed_model
+            
+            # Load or create index
+            self.index = self._load_or_create_index()
+            self.query_engine = self.index.as_query_engine(
+                llm=self.llm,
+                similarity_top_k=3,
+                response_mode="compact"
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to initialize RAG system: {str(e)}. "
+                f"Please verify your Google API key and network connection."
+            ) from e
         
     def _extract_xaml_actions(self, xaml: str) -> List[str]:
         """Extract action types from XAML content."""
@@ -90,8 +110,11 @@ class DataverseWorkflowRAG:
     
     def _preprocess_workflows(self) -> List[Document]:
         """Preprocess workflow file into structured documents with metadata."""
-        with open(self.workflow_file, 'r', encoding='utf-8') as f:
-            content = f.read()
+        try:
+            with open(self.workflow_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except IOError as e:
+            raise IOError(f"Failed to read workflow file '{self.workflow_file}': {str(e)}") from e
         
         workflow_dicts = content.strip().split('\n')
         documents = []
@@ -164,27 +187,42 @@ ACTION DETAILS:
                 print(f"  Modified fields: {attributes_modified}")
                 print(f"  Read fields: {attributes_read}")
                 
+            except (ValueError, SyntaxError) as e:
+                print(f"✗ Error parsing workflow string: {e}")
+                continue
             except Exception as e:
                 print(f"✗ Error processing workflow: {e}")
                 continue
+        
+        if not documents:
+            raise ValueError(
+                f"No valid workflows found in '{self.workflow_file}'. "
+                f"The file may be empty or contain invalid data."
+            )
         
         return documents
     
     def _load_or_create_index(self) -> VectorStoreIndex:
         """Load existing index or create new one from preprocessed workflow data."""
-        print("Creating new index with XAML preprocessing...")
-        documents = self._preprocess_workflows()
-        
-        node_parser = SentenceSplitter(chunk_size=512, chunk_overlap=100)
-        
-        index = VectorStoreIndex.from_documents(
-            documents,
-            embed_model=self.embed_model,
-            transformations=[node_parser],
-            show_progress=True
-        )
-        
-        return index
+        try:
+            print("Creating new index with XAML preprocessing...")
+            documents = self._preprocess_workflows()
+            
+            node_parser = SentenceSplitter(chunk_size=512, chunk_overlap=100)
+            
+            index = VectorStoreIndex.from_documents(
+                documents,
+                embed_model=self.embed_model,
+                transformations=[node_parser],
+                show_progress=True
+            )
+            
+            return index
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to create vector index: {str(e)}. "
+                f"This may be due to invalid workflow data or Google API issues."
+            ) from e
     
     def query(self, question: str) -> str:
         """
@@ -196,8 +234,14 @@ ACTION DETAILS:
         Returns:
             Answer based on the indexed workflow XAML
         """
-        response = self.query_engine.query(question)
-        return str(response)
+        try:
+            response = self.query_engine.query(question)
+            return str(response)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to execute query '{question}': {str(e)}. "
+                f"This may be due to Google API issues or an invalid query."
+            ) from e
     
     def find_set_value_workflows(self, fieldname: str) -> str:
         """
@@ -323,4 +367,9 @@ ACTION DETAILS:
 
 
 # Create default RAG instance
-root_agent = DataverseWorkflowRAG()
+try:
+    root_agent = DataverseWorkflowRAG()
+except Exception as e:
+    print(f"Warning: Failed to initialize default workflow RAG agent: {str(e)}")
+    print("You will need to initialize DataverseWorkflowRAG() manually after resolving the issue.")
+    root_agent = None
