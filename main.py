@@ -9,7 +9,7 @@ deplist = dvoperation.get_dependencylist_for_attribute(attributeid)
 #wflist = dvoperation.retrieve_only_businessruledependency(deplist)
 wflist = dvoperation.retrieve_only_workflowdependency(deplist)
 
-ImplementationDefinitionFileOperations.create_businessrule_file(wflist, 'br.txt')
+ImplementationDefinitionFileOperations.create_workflow_file(wflist)
 
 #cr5b9_test1
 #cr5b9_attribmeta

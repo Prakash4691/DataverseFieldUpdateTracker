@@ -45,3 +45,5 @@ storage/
 *.storage/
 
 .claude/
+
+*.txt
