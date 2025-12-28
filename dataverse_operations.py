@@ -58,7 +58,7 @@ class DataverseOperations:
         return workflowlist
     
     def get_forms_for_entity(self, entityname:str):
-        forms = requests.get(f"{self.dataverse_envurl}api/data/v9.2/systemforms?$filter=objecttypecode eq '{entityname}' and (type eq 2 or type eq 6)&$select=formid,name,type,formxml",
+        forms = requests.get(f"{self.dataverse_envurl}api/data/v9.2/systemforms?$filter=objecttypecode eq '{entityname}' and (type eq 2 or type eq 6)&$select=formid",
                            headers={
                                'Accept': 'application/json',
                                'OData-MaxVersion': '4.0',
@@ -66,7 +66,7 @@ class DataverseOperations:
                                'Authorization': f'Bearer {self.token}'
                            })
         
-        formslist = forms.json().get('value')
+        formslist = [form.get('formid') for form in forms.json().get('value')]
         
         return formslist
     
@@ -74,7 +74,7 @@ class DataverseOperations:
         dependencylist = []
         
         for formid in formids:
-            dependency = requests.get(f"{self.dataverse_envurl}api/data/v9.2/RetrieveDependenciesForDelete(ObjectId={formid},ComponentType=24)",
+            dependency = requests.get(f"{self.dataverse_envurl}api/data/v9.2/RetrieveDependentComponents(ObjectId={formid},ComponentType=24)",
                                headers={
                                    'Accept': 'application/json',
                                    'OData-MaxVersion': '4.0',
