@@ -22,6 +22,7 @@ A Python-based tool for tracking field updates in Microsoft Dataverse by analyzi
 - Microsoft Dataverse environment with admin access
 - Azure AD application (service principal) with Dataverse API permissions
 - Google Gemini API key
+- PowerPlatform Dataverse SDK (included in requirements.txt)
 
 ### Installation
 
@@ -98,17 +99,17 @@ A Python-based tool for tracking field updates in Microsoft Dataverse by analyzi
 - **LLM**: Google Gemini (gemini-2.5-flash)
 - **RAG Framework**: LlamaIndex 0.10.0+
 - **Embeddings**: Google Gemini text-embedding-004
-- **Dataverse SDK**: PowerPlatform-Dataverse-Client 0.1.0b3
+- **Dataverse SDK**: PowerPlatform-Dataverse-Client 0.1.0b3 (used for table operations)
 - **Authentication**: Azure Identity (ClientSecretCredential)
-- **HTTP Client**: Requests 2.28.0+
+- **HTTP Client**: Requests 2.28.0+ (used for metadata API and custom functions)
 - **Configuration**: python-dotenv 1.0.0+
 
 ## Repository Structure
 
 ```
 dataverse-field-update-tracker/
-├── connect_to_dataverse.py       # Handles Azure authentication and Dataverse connection
-├── dataverse_operations.py       # Core Dataverse API operations (get attributes, dependencies, web resources)
+├── connect_to_dataverse.py       # Handles Azure authentication and DataverseClient initialization
+├── dataverse_operations.py       # Core Dataverse operations (uses SDK + HTTP for specialized ops)
 ├── file_operations.py            # File I/O for workflow and web resource metadata
 ├── workflow_rag.py               # RAG system for XAML analysis using LlamaIndex
 ├── webresource_rag.py            # RAG system for JavaScript web resource analysis
@@ -283,13 +284,15 @@ custom_rag = DataverseWorkflowRAG(persist_dir="./custom_storage")
 1. **Authentication Layer** (`connect_to_dataverse.py`)
 
    - Authenticates to Azure AD using service principal credentials
+   - Initializes PowerPlatform DataverseClient SDK instance
    - Acquires OAuth2 access token for Dataverse API
 
 2. **Data Retrieval Layer** (`dataverse_operations.py`)
 
-   - Retrieves attribute metadata ID from Dataverse
-   - Calls `RetrieveDependenciesForDelete` function to get all dependencies
+   - Uses PowerPlatform SDK `client.get()` for table operations (workflows, forms, web resources)
+   - Uses direct HTTP requests for metadata API (`EntityDefinitions`) and custom functions (`RetrieveDependenciesForDelete`)
    - Filters for workflow dependencies (component type 29, categories 0 and 2, state 1)
+   - Handles pagination automatically via SDK generators
 
 3. **Data Processing Layer** (`file_operations.py`)
 
@@ -367,9 +370,11 @@ app.run('account', 'name')
 
 ### DataverseOperations Class
 
+Uses PowerPlatform Dataverse SDK for standard table operations and direct HTTP requests for specialized operations (metadata API, custom functions).
+
 #### `get_attibuteid(entityname: str, attributename: str) -> str`
 
-Retrieves the MetadataId (GUID) of a specific attribute.
+Retrieves the MetadataId (GUID) of a specific attribute using EntityDefinitions metadata API (HTTP request).
 
 **Parameters:**
 
@@ -380,7 +385,7 @@ Retrieves the MetadataId (GUID) of a specific attribute.
 
 #### `get_dependencylist_for_attribute(attributeid: str) -> dict`
 
-Retrieves all dependencies for an attribute using `RetrieveDependenciesForDelete`.
+Retrieves all dependencies for an attribute using `RetrieveDependenciesForDelete` custom function (HTTP request).
 
 **Parameters:**
 
@@ -390,13 +395,43 @@ Retrieves all dependencies for an attribute using `RetrieveDependenciesForDelete
 
 #### `retrieve_only_workflowdependency(dependencylist: dict) -> list`
 
-Filters dependencies to return only workflows and business rules.
+Filters dependencies and retrieves workflow records using SDK `client.get()`.
 
 **Parameters:**
 
 - `dependencylist`: Dependency response from `get_dependencylist_for_attribute`
 
 **Returns:** List of workflow metadata dictionaries
+
+#### `get_forms_for_entity(entityname: str) -> list`
+
+Retrieves form IDs for an entity using SDK `client.get("systemform")` with automatic pagination.
+
+**Parameters:**
+
+- `entityname`: Logical name of the entity
+
+**Returns:** List of form GUIDs
+
+#### `get_dependencylist_for_form(formids: list) -> list`
+
+Retrieves form XML and parses web resource references using SDK `client.get("systemform")`.
+
+**Parameters:**
+
+- `formids`: List of form GUIDs
+
+**Returns:** List of web resource references
+
+#### `retrieve_webresources_from_dependency(webresource_references: list) -> list`
+
+Retrieves and decodes web resource content using SDK `client.get("webresource")`.
+
+**Parameters:**
+
+- `webresource_references`: List of web resource reference dictionaries
+
+**Returns:** List of decoded JavaScript web resources
 
 ### DataverseWorkflowRAG Class
 
