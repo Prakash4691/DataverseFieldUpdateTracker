@@ -7,11 +7,11 @@ This is a Python-based tool for tracking field updates in Microsoft Dataverse by
 ## Tech Stack
 
 - **Python**: 3.8+ (currently using 3.14 in development)
-- **Microsoft Dataverse/Power Platform SDK**: For Dataverse API interactions
+- **Microsoft Dataverse/Power Platform SDK**: PowerPlatform-Dataverse-Client for table operations
 - **Azure Identity**: OAuth2 authentication using service principal (ClientSecretCredential)
 - **LlamaIndex**: RAG framework for document indexing and querying
 - **Google Gemini AI**: LLM (gemini-2.5-flash) and embeddings (text-embedding-004)
-- **Requests**: HTTP library for Dataverse Web API calls
+- **Requests**: HTTP library for metadata API and custom functions
 - **python-dotenv**: Environment variable management
 
 ## Project Structure
@@ -41,14 +41,15 @@ dataverse-field-update-tracker/
 
 **Class**: `ConnectToDataverse`
 
-**Purpose**: Authenticate to Microsoft Dataverse using Azure service principal credentials.
+**Purpose**: Authenticate to Microsoft Dataverse using Azure service principal credentials and initialize the DataverseClient SDK.
 
 **Key Details**:
 
 - Uses `ClientSecretCredential` from `azure.identity`
 - Reads credentials from `.env` file: `client_id`, `tenant_id`, `client_secret`, `env_url`
+- Creates `DataverseClient` instance from PowerPlatform SDK
 - Acquires OAuth2 access token via `DataverseClient.auth._acquire_token()`
-- Exposes `self.token` and `self.dataverse_envurl` for use in API calls
+- Exposes `self.client`, `self.token`, and `self.dataverse_envurl` for use in API calls
 
 **Environment Variables Required**:
 
@@ -63,30 +64,66 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 
 **Class**: `DataverseOperations`
 
+**Purpose**: Provides methods for interacting with Microsoft Dataverse using both PowerPlatform SDK and direct HTTP requests.
+
+**Implementation Strategy**:
+- **SDK Methods** (`client.get()`): Used for standard table operations (workflows, forms, web resources)
+- **HTTP Requests**: Used for metadata API (`EntityDefinitions`) and custom functions (`RetrieveDependenciesForDelete`)
+
 **Methods**:
 
 - `get_attibuteid(entityname: str, attributename: str) -> str`
 
   - Retrieves the MetadataId of a specific attribute/field
+  - **Implementation**: Direct HTTP request to EntityDefinitions metadata API (not supported by SDK)
   - Uses OData Web API: `EntityDefinitions(LogicalName='{entityname}')/Attributes`
   - Returns: attribute GUID
 
 - `get_dependencylist_for_attribute(attributeid: str) -> dict`
 
   - Retrieves all dependencies for an attribute
-  - Uses: `RetrieveDependenciesForDelete` function
+  - **Implementation**: Direct HTTP request to `RetrieveDependenciesForDelete` custom function (not supported by SDK)
   - Returns: full dependency JSON response
 
 - `retrieve_only_workflowdependency(dependencylist: dict) -> list`
 
   - Filters dependencies for workflows or business rules
+  - **Implementation**: Uses SDK `client.get("workflow", record_id=..., select=[...])`
   - Filters: `dependentcomponenttype==29`, `category eq 0 or category eq 2` (workflow or businessrule), `statecode eq 1`
   - Returns: list of workflow metadata dicts
 
+- `get_forms_for_entity(entityname: str) -> list`
+
+  - Retrieves main and mobile forms for an entity
+  - **Implementation**: Uses SDK `client.get("systemform", filter=..., select=[...])`
+  - Handles pagination automatically via generator
+  - Returns: list of form GUIDs
+
+- `get_dependencylist_for_form(formids: list) -> list`
+
+  - Parses FormXML to find web resource references
+  - **Implementation**: Uses SDK `client.get("systemform", record_id=..., select=[...])`
+  - Extracts web resource names using regex patterns
+  - Returns: list of web resource reference dicts
+
+- `retrieve_webresources_from_dependency(webresource_references: list) -> list`
+
+  - Retrieves and decodes web resource JavaScript content
+  - **Implementation**: Uses SDK `client.get("webresource", filter=..., select=[...])`
+  - Decodes base64-encoded content
+  - Returns: list of decoded web resource dicts
+
+**Error Handling**:
+
+- Imports `DataverseError` from `PowerPlatform.Dataverse.core.errors`
+- SDK methods catch `DataverseError`, `KeyError`, `TypeError`
+- HTTP methods catch `requests.exceptions.RequestException`
+
 **API Patterns**:
 
-- All requests use OData v4.0 protocol
-- Headers required: `Accept: application/json`, `OData-MaxVersion: 4.0`, `OData-Version: 4.0`, `Authorization: Bearer {token}`
+- **SDK Calls**: Use `self.client.get(table_name, record_id=..., select=..., filter=...)`
+- **HTTP Calls**: Use OData v4.0 protocol with manual URL construction
+- Headers for HTTP: `Accept: application/json`, `OData-MaxVersion: 4.0`, `OData-Version: 4.0`, `Authorization: Bearer {token}`
 - Base URL format: `{env_url}api/data/v9.2/`
 
 ### 3. File Operations (`file_operations.py`)
@@ -297,26 +334,61 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
   - `llama-index` - RAG framework core
   - `llama-index-llms-google-genai` - Google Gemini LLM integration
   - `llama-index-embeddings-google-genai` - Google embeddings
-  - `requests` - HTTP client
-  - `python-dotenv` - Environment variable loading
-- Additional dependencies required (should be added to requirements.txt):
   - `azure-identity` - Azure authentication
-  - `PowerPlatform-Dataverse` - Dataverse client SDK
+  - `PowerPlatform-Dataverse-Client` - Dataverse SDK for table operations
+  - `requests` - HTTP client for metadata API and custom functions
+  - `python-dotenv` - Environment variable loading
 
 ### API Considerations
 
 - **Rate Limiting**: Dataverse API has service protection limits
 - **Token Expiration**: Access tokens expire after 1 hour - no refresh logic currently
-- **OData Syntax**: Use `$select`, `$filter`, `$expand` carefully
+- **SDK vs HTTP**: Use SDK for table operations, HTTP for metadata/custom functions
+- **Pagination**: SDK handles pagination automatically via generators
+- **OData Syntax**: Use `$select`, `$filter`, `$expand` carefully in HTTP calls
 - **XAML Size**: Business rule XAML can be very large (>1MB) - handle accordingly
+- **Error Types**: SDK raises `DataverseError`, HTTP raises `RequestException`
 
 ## Common Tasks for Agents
 
 ### Adding New Dataverse Operations
 
-1. Add method to `DataverseOperations` class
-2. Follow existing pattern: construct URL, set headers, make request, parse JSON
-3. Use `self.dataverse_envurl` and `self.token` from parent class
+1. **Determine Implementation Method**:
+   - Use SDK `client.get()` for standard table queries
+   - Use HTTP requests for metadata API or custom functions
+
+2. **For SDK-based operations**:
+   - Use `self.client.get(table_name, record_id=..., select=..., filter=...)`
+   - Handle pagination with generator: `for batch in self.client.get(...)`
+   - Catch `DataverseError` from `PowerPlatform.Dataverse.core.errors`
+
+3. **For HTTP-based operations**:
+   - Construct URL with `self.dataverse_envurl`
+   - Set OData headers and Authorization with `self.token`
+   - Catch `requests.exceptions.RequestException`
+
+**Example SDK Usage**:
+```python
+# Single record
+workflow = self.client.get("workflow", record_id=workflow_id, select=["name", "xaml"])
+
+# Multiple records with pagination
+for batch in self.client.get("systemform", filter="type eq 2", select=["formid"]):
+    for form in batch:
+        process(form)
+```
+
+**Example HTTP Usage**:
+```python
+# For metadata or custom functions not in SDK
+response = requests.get(
+    f"{self.dataverse_envurl}api/data/v9.2/EntityDefinitions(...)",
+    headers={
+        'Accept': 'application/json',
+        'Authorization': f'Bearer {self.token}'
+    }
+)
+```
 
 ### Extending RAG Analysis
 
@@ -354,16 +426,18 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 ## Known Issues & TODOs
 
 1. **Token Refresh**: No logic to refresh expired tokens
-2. **Error Handling**: Minimal error handling throughout
+2. **Error Handling**: Could be improved with better retry logic
 3. **Logging**: No structured logging implemented
 4. **Testing**: No unit tests present
-5. **Documentation**: Missing docstrings in many methods
+5. **Documentation**: Could add more inline comments
 6. **Type Hints**: Inconsistent usage of type hints
-7. **Missing Dependencies**: `azure-identity` and `PowerPlatform-Dataverse` not in requirements.txt
-8. **Hard-coded Values**: File names like 'wf.txt' and 'storage/' are hard-coded
+7. **Hard-coded Values**: File names like 'wf.txt' and 'storage/' are hard-coded
 
 ## Important Notes
 
+- **SDK vs HTTP**: SDK used for table queries (workflows, forms, webresources); HTTP used for metadata API and custom functions
+- **Pagination**: SDK handles pagination automatically via generators returning batches
+- **Error Handling**: SDK operations catch `DataverseError`; HTTP operations catch `RequestException`
 - **XAML Structure**: Microsoft Dataverse business rules use proprietary XAML schema
 - **Component Types**: Type 29 = workflows (includes business rules, cloud flows, etc.), Type 61 = web resources
 - **Categories**: Category 2 = business rule, Category 0 = workflow/cloud flow
