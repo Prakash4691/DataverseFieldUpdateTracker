@@ -1,5 +1,6 @@
 import requests
 from connect_to_dataverse import ConnectToDataverse 
+from PowerPlatform.Dataverse.core.errors import DataverseError 
 
 class DataverseOperations:
     """
@@ -189,7 +190,7 @@ class DataverseOperations:
                     if workflow_data.get('statecode') == 1 and (workflow_data.get('category')==0 or workflow_data.get('category')==2):
                         workflowlist.append(workflow_data)
                         
-                except Exception as e:
+                except (DataverseError, KeyError, TypeError) as e:
                     print(f"Warning: Failed to retrieve workflow {workflowid}: {str(e)}")
                     continue
 
@@ -234,7 +235,7 @@ class DataverseOperations:
             
             return formslist
             
-        except Exception as e:
+        except DataverseError as e:
             raise ConnectionError(
                 f"Failed to retrieve forms for entity '{entityname}': {str(e)}"
             ) from e
@@ -296,7 +297,7 @@ class DataverseOperations:
                     
                     webresource_references.extend([{'formid': formid, 'webresourcename': ref} for ref in all_refs])
                     
-            except Exception as e:
+            except (DataverseError, KeyError) as e:
                 print(f"Warning: Error processing form {formid}: {str(e)}")
                 continue
         
@@ -369,7 +370,7 @@ class DataverseOperations:
                     if webresource_found:
                         break
                         
-            except Exception as e:
+            except (DataverseError, KeyError) as e:
                 print(f"Warning: Error processing web resource '{ref.get('webresourcename', 'unknown')}': {str(e)}")
                 continue
         
