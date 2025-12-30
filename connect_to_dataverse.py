@@ -12,6 +12,7 @@ class ConnectToDataverse:
     Attributes:
         dataverse_envurl (str): The Dataverse environment URL (e.g., https://org.crm.dynamics.com/).
         token (str): The OAuth2 access token for API authentication.
+        client (DataverseClient): The authenticated DataverseClient instance for SDK operations.
     
     Required Environment Variables:
         client_id: Azure AD application client ID
@@ -50,8 +51,8 @@ class ConnectToDataverse:
         
         try:
             credential=ClientSecretCredential(tenantid, clientid, clientsecret)
-            client = DataverseClient(self.dataverse_envurl, credential) 
-            self.token = client.auth._acquire_token(f'{self.dataverse_envurl}.default').access_token
+            self.client = DataverseClient(self.dataverse_envurl, credential) 
+            self.token = self.client.auth._acquire_token(f'{self.dataverse_envurl}.default').access_token
         except Exception as e:
             raise ConnectionError(
                 f"Failed to authenticate to Dataverse: {str(e)}. "
