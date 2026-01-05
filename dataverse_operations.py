@@ -1,4 +1,5 @@
 import requests
+import time
 from connect_to_dataverse import ConnectToDataverse 
 from PowerPlatform.Dataverse.core.errors import DataverseError 
 
@@ -29,13 +30,14 @@ class DataverseOperations:
         self.token = conn.token
         self.client = conn.client
 
-    def get_attibuteid(self, entityname:str, attributename:str):
+    def get_attibuteid(self, entityname:str, attributename:str, rate_limit_tracker=None):
         """
         Retrieve the MetadataId (GUID) of a specific entity attribute.
         
         Args:
             entityname (str): The logical name of the entity (e.g., 'account', 'contact').
             attributename (str): The logical name of the attribute/field (e.g., 'name', 'emailaddress1').
+            rate_limit_tracker (RateLimitTracker, optional): Tracker instance to record rate limit metrics.
         
         Returns:
             str: The MetadataId (GUID) of the attribute.
@@ -46,46 +48,93 @@ class DataverseOperations:
         
         Example:
             >>> ops = DataverseOperations()
-            >>> attr_id = ops.get_attibuteid('account', 'name')
+            >>> tracker = RateLimitTracker()
+            >>> attr_id = ops.get_attibuteid('account', 'name', rate_limit_tracker=tracker)
         """
-        try:
-            attributemetadata = requests.get(
-            f"{self.dataverse_envurl}api/data/v9.2/EntityDefinitions(LogicalName='{entityname}')/Attributes?$filter=LogicalName eq '{attributename}'",
-            headers={
+        max_retries = 3
+        url = f"{self.dataverse_envurl}api/data/v9.2/EntityDefinitions(LogicalName='{entityname}')/Attributes?$filter=LogicalName eq '{attributename}'"
+        headers = {
             'Accept': 'application/json',
             'OData-MaxVersion': '4.0',
             'OData-Version': '4.0',
-            'Authorization': f'Bearer {self.token}'})
-            
-            attributemetadata.raise_for_status()
-            
-            response_data = attributemetadata.json()
-            
-            if not response_data.get('value'):
+            'Authorization': f'Bearer {self.token}'
+        }
+        
+        hit_429 = False
+        retry_count = 0
+        total_retry_after = 0
+        request_start = time.time()
+        
+        for attempt in range(max_retries):
+            try:
+                attributemetadata = requests.get(url, headers=headers)
+                
+                # Handle 429 Too Many Requests with Retry-After
+                if attributemetadata.status_code == 429:
+                    hit_429 = True
+                    retry_count += 1
+                    
+                    if attempt < max_retries - 1:
+                        retry_after = int(attributemetadata.headers.get('Retry-After', 60))
+                        total_retry_after += retry_after
+                        print(f"Rate limit exceeded. Waiting {retry_after} seconds before retry (attempt {attempt + 1}/{max_retries})...")
+                        time.sleep(retry_after)
+                        continue
+                
+                attributemetadata.raise_for_status()
+                
+                response_data = attributemetadata.json()
+                
+                if not response_data.get('value'):
+                    raise ValueError(
+                        f"Attribute '{attributename}' not found for entity '{entityname}'. "
+                        f"Please verify the entity and attribute names."
+                    )
+                
+                attributeid = response_data['value'][0].get('MetadataId')
+                
+                if not attributeid:
+                    raise ValueError(
+                        f"MetadataId not found for attribute '{attributename}' in entity '{entityname}'."
+                    )
+                
+                # Record successful request
+                if rate_limit_tracker:
+                    duration = time.time() - request_start
+                    rate_limit_tracker.record_request(
+                        endpoint=f"get_attibuteid({entityname}.{attributename})",
+                        duration=duration,
+                        hit_429=hit_429,
+                        retry_count=retry_count,
+                        retry_after=total_retry_after
+                    )
+                
+                return attributeid
+                
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1 and attributemetadata.status_code != 429:
+                    continue
+                
+                # Record failed request
+                if rate_limit_tracker:
+                    duration = time.time() - request_start
+                    rate_limit_tracker.record_request(
+                        endpoint=f"get_attibuteid({entityname}.{attributename})",
+                        duration=duration,
+                        hit_429=hit_429,
+                        retry_count=retry_count,
+                        retry_after=total_retry_after
+                    )
+                
+                raise ConnectionError(
+                    f"Failed to retrieve attribute ID for '{entityname}.{attributename}': {str(e)}"
+                ) from e
+            except (KeyError, IndexError) as e:
                 raise ValueError(
-                    f"Attribute '{attributename}' not found for entity '{entityname}'. "
-                    f"Please verify the entity and attribute names."
-                )
-            
-            attributeid = response_data['value'][0].get('MetadataId')
-            
-            if not attributeid:
-                raise ValueError(
-                    f"MetadataId not found for attribute '{attributename}' in entity '{entityname}'."
-                )
-            
-            return attributeid
-            
-        except requests.exceptions.RequestException as e:
-            raise ConnectionError(
-                f"Failed to retrieve attribute ID for '{entityname}.{attributename}': {str(e)}"
-            ) from e
-        except (KeyError, IndexError) as e:
-            raise ValueError(
-                f"Unexpected response format when retrieving attribute '{attributename}' for entity '{entityname}': {str(e)}"
-            ) from e
+                    f"Unexpected response format when retrieving attribute '{attributename}' for entity '{entityname}': {str(e)}"
+                ) from e
     
-    def get_dependencylist_for_attribute(self, attributeid:str):
+    def get_dependencylist_for_attribute(self, attributeid:str, rate_limit_tracker=None):
         """
         Retrieve all dependencies for a specific attribute.
         
@@ -94,6 +143,7 @@ class DataverseOperations:
         
         Args:
             attributeid (str): The MetadataId (GUID) of the attribute.
+            rate_limit_tracker (RateLimitTracker, optional): Tracker instance to record rate limit metrics.
         
         Returns:
             dict: Full dependency JSON response containing a 'value' list with dependency objects.
@@ -106,38 +156,85 @@ class DataverseOperations:
         
         Example:
             >>> ops = DataverseOperations()
-            >>> dependencies = ops.get_dependencylist_for_attribute(attr_id)
+            >>> tracker = RateLimitTracker()
+            >>> dependencies = ops.get_dependencylist_for_attribute(attr_id, rate_limit_tracker=tracker)
         """
-        try:
-            dependency = requests.get(f"{self.dataverse_envurl}api/data/v9.2/RetrieveDependenciesForDelete(ObjectId={attributeid},ComponentType=2)",
-                               headers={
-                                   'Accept': 'application/json',
-                                   'OData-MaxVersion': '4.0',
-                                   'OData-Version': '4.0',
-                                   'Authorization': f'Bearer {self.token}'
-                               })
-            
-            dependency.raise_for_status()
-            dependencylist = dependency.json()
-            
-            if 'value' not in dependencylist:
+        max_retries = 3
+        url = f"{self.dataverse_envurl}api/data/v9.2/RetrieveDependenciesForDelete(ObjectId={attributeid},ComponentType=2)"
+        headers = {
+            'Accept': 'application/json',
+            'OData-MaxVersion': '4.0',
+            'OData-Version': '4.0',
+            'Authorization': f'Bearer {self.token}'
+        }
+        
+        hit_429 = False
+        retry_count = 0
+        total_retry_after = 0
+        request_start = time.time()
+        
+        for attempt in range(max_retries):
+            try:
+                dependency = requests.get(url, headers=headers)
+                
+                # Handle 429 Too Many Requests with Retry-After
+                if dependency.status_code == 429:
+                    hit_429 = True
+                    retry_count += 1
+                    
+                    if attempt < max_retries - 1:
+                        retry_after = int(dependency.headers.get('Retry-After', 60))
+                        total_retry_after += retry_after
+                        print(f"Rate limit exceeded. Waiting {retry_after} seconds before retry (attempt {attempt + 1}/{max_retries})...")
+                        time.sleep(retry_after)
+                        continue
+                
+                dependency.raise_for_status()
+                dependencylist = dependency.json()
+                
+                if 'value' not in dependencylist:
+                    raise ValueError(
+                        f"Unexpected response format for dependencies of attribute '{attributeid}'. "
+                        f"Expected 'value' key in response."
+                    )
+                
+                # Record successful request
+                if rate_limit_tracker:
+                    duration = time.time() - request_start
+                    rate_limit_tracker.record_request(
+                        endpoint=f"get_dependencylist_for_attribute({attributeid[:8]}...)",
+                        duration=duration,
+                        hit_429=hit_429,
+                        retry_count=retry_count,
+                        retry_after=total_retry_after
+                    )
+                
+                return dependencylist
+                
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1 and dependency.status_code != 429:
+                    continue
+                
+                # Record failed request
+                if rate_limit_tracker:
+                    duration = time.time() - request_start
+                    rate_limit_tracker.record_request(
+                        endpoint=f"get_dependencylist_for_attribute({attributeid[:8]}...)",
+                        duration=duration,
+                        hit_429=hit_429,
+                        retry_count=retry_count,
+                        retry_after=total_retry_after
+                    )
+                
+                raise ConnectionError(
+                    f"Failed to retrieve dependencies for attribute '{attributeid}': {str(e)}"
+                ) from e
+            except ValueError as e:
+                if "Unexpected response format" in str(e):
+                    raise
                 raise ValueError(
-                    f"Unexpected response format for dependencies of attribute '{attributeid}'. "
-                    f"Expected 'value' key in response."
-                )
-            
-            return dependencylist
-            
-        except requests.exceptions.RequestException as e:
-            raise ConnectionError(
-                f"Failed to retrieve dependencies for attribute '{attributeid}': {str(e)}"
-            ) from e
-        except ValueError as e:
-            if "Unexpected response format" in str(e):
-                raise
-            raise ValueError(
-                f"Invalid JSON response when retrieving dependencies for attribute '{attributeid}': {str(e)}"
-            ) from e
+                    f"Invalid JSON response when retrieving dependencies for attribute '{attributeid}': {str(e)}"
+                ) from e
     
     def retrieve_only_workflowdependency(self, dependencylist):
         """
