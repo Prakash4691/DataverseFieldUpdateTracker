@@ -8,11 +8,13 @@ A Python-based tool for tracking field updates in Microsoft Dataverse by analyzi
 - **Business Rule Analysis** - Analyzes business rule XAML to identify field updates
 - **Classic Workflow Analysis** - Supports classic workflows (category=0) in addition to business rules (category=2)
 - **Web Resource JavaScript Analysis** - Detects setValue operations in form scripts and web resources
+- **Production-Grade Rate Limit Tracking** - Monitors API usage against Dataverse service protection limits (6000 req/5 min)
 - **RAG-Powered Intelligence** - Uses LlamaIndex and Google Gemini to extract field update patterns
 - **XAML Action Detection** - Identifies SET_VALUE, SET_DEFAULT, GET_VALUE, UPDATE_ENTITY, and more
 - **JavaScript Pattern Detection** - Detects formContext.getAttribute().setValue(), variable assignments, and deprecated patterns
 - **Metadata-Based Filtering** - Query specific workflow types or field modifications
 - **OAuth2 Authentication** - Secure connection to Dataverse using Azure service principal
+- **Automatic Retry Logic** - Handles 429 rate limit errors with exponential backoff
 
 ## Quick Start
 
@@ -103,6 +105,7 @@ A Python-based tool for tracking field updates in Microsoft Dataverse by analyzi
 - **Authentication**: Azure Identity (ClientSecretCredential)
 - **HTTP Client**: Requests 2.28.0+ (used for metadata API and custom functions)
 - **Configuration**: python-dotenv 1.0.0+
+- **Rate Limiting**: Custom RateLimitTracker with 5-minute sliding window monitoring
 
 ## Repository Structure
 
@@ -113,7 +116,8 @@ dataverse-field-update-tracker/
 ├── file_operations.py            # File I/O for workflow and web resource metadata
 ├── workflow_rag.py               # RAG system for XAML analysis using LlamaIndex
 ├── webresource_rag.py            # RAG system for JavaScript web resource analysis
-├── main.py                       # Main CLI application with argument parsing
+├── rate_limit_tracker.py         # Production-grade rate limit tracking with 5-min sliding window
+├── main.py                       # Main CLI application with rate limit monitoring
 ├── example_usage.py              # Example of RAG analysis usage (workflows + web resources)
 ├── requirements.txt              # Python dependencies
 ├── pyproject.toml                # Project metadata
@@ -311,6 +315,43 @@ custom_rag = DataverseWorkflowRAG(persist_dir="./custom_storage")
    - Builds vector indices using Google embeddings (separate indices for workflows and web resources)
    - Enables natural language queries via LlamaIndex + Gemini LLM
 
+### Rate Limit Tracking
+
+The tool includes production-grade rate limit monitoring based on Microsoft Dataverse service protection limits:
+
+- **Limit**: 6000 requests per 5 minutes per user
+- **Sliding Window**: Tracks requests in 5-minute rolling window
+- **429 Handling**: Automatically respects Retry-After headers with exponential backoff
+- **Metrics Tracked**:
+  - Total API requests made
+  - Requests in last 5 minutes
+  - 429 errors encountered
+  - Retry attempts and wait times
+  - Estimated time to rate limit
+
+**Example Output:**
+
+```
+================================================================================
+RATE LIMIT TRACKING SUMMARY
+================================================================================
+Total Requests:              15
+Requests (Last 5 min):       15 / 6000 (0.25%)
+429 Errors Encountered:      0
+Total Retry Attempts:        0
+Total Wait Time:             0.0s
+Elapsed Time:                34.52s
+Avg Requests/Minute:         26.08
+Est. Time to Limit:          >230 minutes
+================================================================================
+```
+
+**Warnings:**
+
+- ⚠️ Alerts when rate limit hit (429 errors)
+- ⚠️ Warns when approaching 80% of limit
+- Provides actionable suggestions for reducing load
+
 ### XAML Actions Detected
 
 | Action Type      | XAML Elements Detected                          | Purpose                    |
@@ -338,26 +379,77 @@ Each workflow is indexed with:
 
 ## API Documentation
 
+### RateLimitTracker Class
+
+Production-grade rate limit tracking for Dataverse API operations.
+
+#### `__init__()`
+
+Initializes the tracker with default metrics.
+
+**Attributes:**
+
+- `total_requests`: Total API requests made
+- `total_429_errors`: Number of 429 rate limit errors
+- `total_retries`: Total retry attempts
+- `total_wait_time`: Cumulative seconds waited for rate limits
+- `request_history`: List of RequestMetrics (5-minute sliding window)
+- `start_time`: Tracking start timestamp
+
+#### `record_request(endpoint: str, duration: float, hit_429: bool = False, retry_count: int = 0, retry_after: int = 0) -> None`
+
+Records metrics for a completed API request.
+
+**Parameters:**
+
+- `endpoint`: Description of the API endpoint called
+- `duration`: Request duration in seconds
+- `hit_429`: Whether a 429 error was encountered
+- `retry_count`: Number of retry attempts made
+- `retry_after`: Total seconds waited due to Retry-After headers
+
+#### `get_requests_in_last_5_minutes() -> int`
+
+Returns count of requests in the last 5-minute sliding window.
+
+#### `get_summary() -> Dict[str, any]`
+
+Returns comprehensive tracking summary with all metrics.
+
+#### `print_summary() -> None`
+
+Prints formatted summary to console with warnings if needed.
+
 ### DataverseFieldUpdateTrackerApp Class
 
-Main application class that orchestrates the complete workflow.
+Main application class that orchestrates the complete workflow with rate limit tracking.
 
 #### `__init__(dv_ops: DataverseOperations | None = None)`
 
-Initializes the application with optional dependency injection for testing.
+Initializes the application with automatic RateLimitTracker creation.
 
 **Parameters:**
 
 - `dv_ops`: Optional DataverseOperations instance (defaults to new instance)
 
+**Attributes:**
+
+- `rate_tracker`: RateLimitTracker instance for monitoring API usage
+
 #### `run(entityname: str, attributename: str) -> None`
 
-Executes the complete workflow: data retrieval, file generation, and RAG analysis.
+Executes the complete workflow: data retrieval, file generation, RAG analysis, and rate limit reporting.
 
 **Parameters:**
 
 - `entityname`: Logical name of the entity (e.g., "account", "contact")
 - `attributename`: Logical name of the attribute (e.g., "name", "emailaddress1")
+
+**Features:**
+
+- Passes rate_tracker to all API operations
+- Displays progress with checkmarks
+- Always prints rate limit summary (even on errors/Ctrl+C)
 
 **Example:**
 
@@ -372,7 +464,7 @@ app.run('account', 'name')
 
 Uses PowerPlatform Dataverse SDK for standard table operations and direct HTTP requests for specialized operations (metadata API, custom functions).
 
-#### `get_attibuteid(entityname: str, attributename: str) -> str`
+#### `get_attibuteid(entityname: str, attributename: str, rate_limit_tracker=None) -> str`
 
 Retrieves the MetadataId (GUID) of a specific attribute using EntityDefinitions metadata API (HTTP request).
 
@@ -380,18 +472,32 @@ Retrieves the MetadataId (GUID) of a specific attribute using EntityDefinitions 
 
 - `entityname`: Logical name of the entity (e.g., "account", "contact", "your_custom_entity")
 - `attributename`: Logical name of the attribute (e.g., "name", "emailaddress1", "your_custom_field")
+- `rate_limit_tracker`: Optional RateLimitTracker instance for monitoring
 
 **Returns:** Attribute GUID as string
 
-#### `get_dependencylist_for_attribute(attributeid: str) -> dict`
+**Rate Limit Handling:**
+
+- Tracks request duration
+- Records 429 errors and retry attempts
+- Respects Retry-After header (up to 3 retries)
+
+#### `get_dependencylist_for_attribute(attributeid: str, rate_limit_tracker=None) -> dict`
 
 Retrieves all dependencies for an attribute using `RetrieveDependenciesForDelete` custom function (HTTP request).
 
 **Parameters:**
 
 - `attributeid`: Attribute MetadataId (GUID)
+- `rate_limit_tracker`: Optional RateLimitTracker instance for monitoring
 
 **Returns:** Full dependency JSON response
+
+**Rate Limit Handling:**
+
+- Tracks request duration
+- Records 429 errors and retry attempts
+- Respects Retry-After header (up to 3 retries)
 
 #### `retrieve_only_workflowdependency(dependencylist: dict) -> list`
 
@@ -558,22 +664,23 @@ pip install -r requirements.txt --upgrade
 
 - Access tokens expire after 1 hour (no automatic refresh implemented)
 - Large XAML files (>1MB) may cause processing delays
-- No pagination for large dependency lists
 - Hardcoded component type filters (currently only type 29 for workflows)
 - No support for cloud flows (modern Power Automate flows)
-- Limited error handling and retry logic
+- Rate limit tracking is informational only (does not throttle requests proactively)
 
 ## Roadmap
 
 - [ ] Add automatic token refresh logic
 - [ ] Support for modern Power Automate cloud flows
-- [ ] Interactive CLI with prompts for entity/field input
 - [ ] Export results to CSV/JSON formats
 - [ ] Add unit tests and integration tests
 - [ ] Performance optimization for large XAML files
 - [ ] Web UI for non-technical users
 - [ ] Ribbon command JavaScript analysis
 - [ ] PCF control custom code analysis
+- [ ] Proactive request throttling before hitting limits
+- [x] Production-grade rate limit tracking (completed)
+- [x] Automatic retry logic with exponential backoff (completed)
 - [x] Business rule analysis (completed)
 - [x] Classic workflow support (completed)
 - [x] RAG-based field update detection (completed)

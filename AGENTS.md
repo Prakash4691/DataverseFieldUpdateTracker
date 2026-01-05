@@ -23,7 +23,8 @@ dataverse-field-update-tracker/
 ├── file_operations.py           # File I/O for workflow and web resource data
 ├── workflow_rag.py              # RAG system for XAML analysis (business rules + workflows)
 ├── webresource_rag.py           # RAG system for JavaScript web resource analysis
-├── main.py                      # Main execution script
+├── rate_limit_tracker.py        # Production-grade rate limit tracking with 5-min sliding window
+├── main.py                      # Main execution script with rate limit monitoring
 ├── example_usage.py             # Example usage of RAG systems
 ├── requirements.txt             # Python dependencies
 ├── pyproject.toml              # Project metadata
@@ -67,22 +68,27 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 **Purpose**: Provides methods for interacting with Microsoft Dataverse using both PowerPlatform SDK and direct HTTP requests.
 
 **Implementation Strategy**:
+
 - **SDK Methods** (`client.get()`): Used for standard table operations (workflows, forms, web resources)
 - **HTTP Requests**: Used for metadata API (`EntityDefinitions`) and custom functions (`RetrieveDependenciesForDelete`)
 
 **Methods**:
 
-- `get_attibuteid(entityname: str, attributename: str) -> str`
+- `get_attibuteid(entityname: str, attributename: str, rate_limit_tracker=None) -> str`
 
   - Retrieves the MetadataId of a specific attribute/field
   - **Implementation**: Direct HTTP request to EntityDefinitions metadata API (not supported by SDK)
   - Uses OData Web API: `EntityDefinitions(LogicalName='{entityname}')/Attributes`
+  - **Rate Limit Tracking**: Records request duration, 429 hits, retry count, and total Retry-After wait time
+  - Handles 429 errors with automatic retry (max 3 attempts, respects Retry-After header)
   - Returns: attribute GUID
 
-- `get_dependencylist_for_attribute(attributeid: str) -> dict`
+- `get_dependencylist_for_attribute(attributeid: str, rate_limit_tracker=None) -> dict`
 
   - Retrieves all dependencies for an attribute
   - **Implementation**: Direct HTTP request to `RetrieveDependenciesForDelete` custom function (not supported by SDK)
+  - **Rate Limit Tracking**: Records request duration, 429 hits, retry count, and total Retry-After wait time
+  - Handles 429 errors with automatic retry (max 3 attempts, respects Retry-After header)
   - Returns: full dependency JSON response
 
 - `retrieve_only_workflowdependency(dependencylist: dict) -> list`
@@ -137,7 +143,76 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
   - Filters out OData metadata keys (keys containing '@')
   - Format: Each workflow dict on a new line as string representation
 
-### 4. RAG System (`workflow_rag.py`)
+### 4. Rate Limit Tracker (`rate_limit_tracker.py`)
+
+**Class**: `RateLimitTracker`
+
+**Purpose**: Production-grade tracking of Dataverse API usage to monitor and manage service protection limits (6000 requests per 5 minutes per user).
+
+**Key Features**:
+
+- **5-Minute Sliding Window**: Tracks requests in rolling 5-minute window matching Dataverse limits
+- **429 Error Tracking**: Records rate limit hits and automatic retry attempts
+- **Metrics Collection**: Captures request duration, retry count, and total wait time
+- **Real-time Monitoring**: Calculates current rate limit percentage and estimated time to limit
+- **Automatic Warnings**: Alerts when hitting limits or approaching 80% threshold
+
+**Attributes**:
+
+- `total_requests`: Total API requests made since tracking started
+- `total_429_errors`: Number of 429 rate limit errors encountered
+- `total_retries`: Cumulative retry attempts across all requests
+- `total_wait_time`: Total seconds spent waiting due to Retry-After headers
+- `request_history`: List of RequestMetrics for sliding window calculation
+- `start_time`: Tracking start timestamp
+
+**Methods**:
+
+- `record_request(endpoint: str, duration: float, hit_429: bool, retry_count: int, retry_after: int) -> None`
+
+  - Records metrics for a completed API request
+  - Automatically cleans up request_history to keep only last 5 minutes
+  - Updates all cumulative metrics
+
+- `get_requests_in_last_5_minutes() -> int`
+
+  - Returns count of requests in the last 5-minute sliding window
+  - Used to calculate rate limit percentage
+
+- `get_summary() -> Dict[str, any]`
+
+  - Returns comprehensive summary with all metrics
+  - Includes: total_requests, requests_last_5_minutes, rate_limit_percentage, estimated_time_to_limit, etc.
+
+- `print_summary() -> None`
+
+  - Prints formatted summary to console
+  - Shows warnings if rate limits hit or approaching 80%
+  - Provides actionable suggestions for reducing load
+
+**Example Usage**:
+
+```python
+from rate_limit_tracker import RateLimitTracker
+
+tracker = RateLimitTracker()
+
+# Pass to API operations
+attributeid = ops.get_attibuteid('account', 'name', rate_limit_tracker=tracker)
+deplist = ops.get_dependencylist_for_attribute(attributeid, rate_limit_tracker=tracker)
+
+# Print summary
+tracker.print_summary()
+```
+
+**Rate Limit Details**:
+
+- **Limit**: 6000 requests per 5 minutes per user
+- **Enforcement**: 5-minute sliding window (not fixed intervals)
+- **Response**: 429 Too Many Requests with Retry-After header
+- **Best Practice**: Stay under 80% (4800 requests) to avoid hitting limit
+
+### 5. RAG System (`workflow_rag.py`)
 
 **Class**: `DataverseWorkflowRAG`
 
@@ -212,7 +287,7 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 }
 ```
 
-### 5. Web Resource RAG System (`webresource_rag.py`)
+### 6. Web Resource RAG System (`webresource_rag.py`)
 
 **Class**: `DataverseWebResourceRAG`
 
@@ -287,23 +362,27 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 
 ## Typical Workflow
 
-### Workflow Analysis
+### Workflow Analysis (with Rate Limit Tracking)
 
 1. **Authenticate**: Create `ConnectToDataverse` instance
-2. **Get Attribute ID**: Call `get_attibuteid(entity, field)`
-3. **Get Dependencies**: Call `get_dependencylist_for_attribute(attributeid)`
-4. **Filter Workflows**: Call `retrieve_only_workflowdependency(dependencylist)`
-5. **Save to File**: Call `create_workflow_file(workflowlist)` → generates `wf.txt`
-6. **Analyze with RAG**: Initialize `DataverseWorkflowRAG()` and call `find_set_value_workflows(fieldname)` or `find_workflows_by_type(fieldname, category)`
+2. **Initialize Tracker**: Create `RateLimitTracker()` instance
+3. **Get Attribute ID**: Call `get_attibuteid(entity, field, rate_limit_tracker=tracker)`
+4. **Get Dependencies**: Call `get_dependencylist_for_attribute(attributeid, rate_limit_tracker=tracker)`
+5. **Filter Workflows**: Call `retrieve_only_workflowdependency(dependencylist)`
+6. **Save to File**: Call `create_workflow_file(workflowlist)` → generates `wf.txt`
+7. **Analyze with RAG**: Initialize `DataverseWorkflowRAG()` and call `find_set_value_workflows(fieldname)` or `find_workflows_by_type(fieldname, category)`
+8. **View Metrics**: Call `tracker.print_summary()` to see rate limit statistics
 
-### Web Resource Analysis
+### Web Resource Analysis (with Rate Limit Tracking)
 
 1. **Authenticate**: Create `ConnectToDataverse` instance
-2. **Get Entity Forms**: Call `get_forms_for_entity(entityname)`
-3. **Get Form Dependencies**: Call `get_dependencylist_for_form(formslist)`
-4. **Filter Web Resources**: Call `retrieve_webresources_from_dependency(deplistform)`
-5. **Save to File**: Call `create_webresourceflow_file(webreslist)` → generates `webre.txt`
-6. **Analyze with RAG**: Initialize `DataverseWebResourceRAG()` and call `find_setvalue_webresources(fieldname)`
+2. **Initialize Tracker**: Create `RateLimitTracker()` instance
+3. **Get Entity Forms**: Call `get_forms_for_entity(entityname)`
+4. **Get Form Dependencies**: Call `get_dependencylist_for_form(formslist)`
+5. **Filter Web Resources**: Call `retrieve_webresources_from_dependency(deplistform)`
+6. **Save to File**: Call `create_webresourceflow_file(webreslist)` → generates `webre.txt`
+7. **Analyze with RAG**: Initialize `DataverseWebResourceRAG()` and call `find_setvalue_webresources(fieldname)`
+8. **View Metrics**: Call `tracker.print_summary()` to see rate limit statistics
 
 ## Coding Standards
 
@@ -341,23 +420,29 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
 
 ### API Considerations
 
-- **Rate Limiting**: Dataverse API has service protection limits
+- **Rate Limiting**: Dataverse API has service protection limits (6000 req/5 min)
+  - Use `RateLimitTracker` to monitor usage
+  - Stay under 80% (4800 requests) to avoid hitting limit
+  - Respect Retry-After header on 429 errors
 - **Token Expiration**: Access tokens expire after 1 hour - no refresh logic currently
 - **SDK vs HTTP**: Use SDK for table operations, HTTP for metadata/custom functions
 - **Pagination**: SDK handles pagination automatically via generators
 - **OData Syntax**: Use `$select`, `$filter`, `$expand` carefully in HTTP calls
 - **XAML Size**: Business rule XAML can be very large (>1MB) - handle accordingly
 - **Error Types**: SDK raises `DataverseError`, HTTP raises `RequestException`
+- **Retry Logic**: Both HTTP methods retry up to 3 times on 429 errors with exponential backoff
 
 ## Common Tasks for Agents
 
 ### Adding New Dataverse Operations
 
 1. **Determine Implementation Method**:
+
    - Use SDK `client.get()` for standard table queries
    - Use HTTP requests for metadata API or custom functions
 
 2. **For SDK-based operations**:
+
    - Use `self.client.get(table_name, record_id=..., select=..., filter=...)`
    - Handle pagination with generator: `for batch in self.client.get(...)`
    - Catch `DataverseError` from `PowerPlatform.Dataverse.core.errors`
@@ -368,6 +453,7 @@ env_url=<Dataverse environment URL, e.g., https://org.crm.dynamics.com/>
    - Catch `requests.exceptions.RequestException`
 
 **Example SDK Usage**:
+
 ```python
 # Single record
 workflow = self.client.get("workflow", record_id=workflow_id, select=["name", "xaml"])
@@ -379,6 +465,7 @@ for batch in self.client.get("systemform", filter="type eq 2", select=["formid"]
 ```
 
 **Example HTTP Usage**:
+
 ```python
 # For metadata or custom functions not in SDK
 response = requests.get(
