@@ -44,6 +44,12 @@ Thumbs.db
 storage/
 *.storage/
 
+# Cloud flow analysis storage
+storage_cloudflows/
+
 .claude/
 
 *.txt
+
+# Cloud flow metadata
+cloudflows.txt

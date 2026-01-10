@@ -1,18 +1,22 @@
 # Dataverse Field Update Tracker
 
-A Python-based tool for tracking field updates in Microsoft Dataverse by analyzing business rules, classic workflows, and web resources. Uses RAG (Retrieval-Augmented Generation) with Google Gemini AI to intelligently identify which business rules, workflows, and JavaScript web resources modify specific fields.
+A Python-based tool for tracking field updates in Microsoft Dataverse by analyzing business rules, classic workflows, Power Automate cloud flows, and web resources. Uses RAG (Retrieval-Augmented Generation) with Google Gemini AI to intelligently identify which business rules, workflows, cloud flows, and JavaScript web resources modify specific fields.
 
 ## Features
 
 - **Automated Field Dependency Tracking** - Retrieves attribute dependencies from Dataverse
 - **Business Rule Analysis** - Analyzes business rule XAML to identify field updates
 - **Classic Workflow Analysis** - Supports classic workflows (category=0) in addition to business rules (category=2)
+- **Power Automate Cloud Flow Analysis** - Analyzes modern cloud flows to detect field modifications with source tracking
+- **Advanced Expression Parsing** - AST-based parser for complex cloud flow expressions with Lark grammar
+- **Variable Tracking** - Comprehensive tracking of variable declarations and modifications in cloud flows
 - **Web Resource JavaScript Analysis** - Detects setValue operations in form scripts and web resources
 - **Production-Grade Rate Limit Tracking** - Monitors API usage against Dataverse service protection limits (6000 req/5 min)
 - **RAG-Powered Intelligence** - Uses LlamaIndex and Google Gemini to extract field update patterns
 - **XAML Action Detection** - Identifies SET_VALUE, SET_DEFAULT, GET_VALUE, UPDATE_ENTITY, and more
 - **JavaScript Pattern Detection** - Detects formContext.getAttribute().setValue(), variable assignments, and deprecated patterns
-- **Metadata-Based Filtering** - Query specific workflow types or field modifications
+- **Cloud Flow Source Analysis** - Tracks whether field values come from triggers, variables, static values, or other sources
+- **Metadata-Based Filtering** - Query specific workflow types, trigger types, or field modifications
 - **OAuth2 Authentication** - Secure connection to Dataverse using Azure service principal
 - **Automatic Retry Logic** - Handles 429 rate limit errors with exponential backoff
 
@@ -93,7 +97,8 @@ A Python-based tool for tracking field updates in Microsoft Dataverse by analyzi
 6. Expected output
    - Creates `wf.txt` with workflow metadata
    - Creates `webre.txt` with web resource metadata
-   - Prints analysis results showing which workflows or web resource modified the specified field
+   - Creates `cloudflows.txt` with cloud flow metadata
+   - Prints analysis results showing which workflows, cloud flows, or web resources modify the specified field
 
 ## Tech Stack
 
@@ -105,6 +110,9 @@ A Python-based tool for tracking field updates in Microsoft Dataverse by analyzi
 - **Authentication**: Azure Identity (ClientSecretCredential)
 - **HTTP Client**: Requests 2.28.0+ (used for metadata API and custom functions)
 - **Configuration**: python-dotenv 1.0.0+
+- **Expression Parsing**: Lark 1.1.9+ (AST-based parser for cloud flow expressions)
+- **JSON Streaming**: ijson 3.3.0+ (handles large cloud flow definitions up to 1GB)
+- **JSON Path**: jsonpath-ng 1.7.0+ (JSON path navigation for nested expressions)
 - **Rate Limiting**: Custom RateLimitTracker with 5-minute sliding window monitoring
 
 ## Repository Structure
@@ -113,22 +121,30 @@ A Python-based tool for tracking field updates in Microsoft Dataverse by analyzi
 dataverse-field-update-tracker/
 ├── connect_to_dataverse.py       # Handles Azure authentication and DataverseClient initialization
 ├── dataverse_operations.py       # Core Dataverse operations (uses SDK + HTTP for specialized ops)
-├── file_operations.py            # File I/O for workflow and web resource metadata
+├── file_operations.py            # File I/O for workflow, web resource, and cloud flow metadata
 ├── workflow_rag.py               # RAG system for XAML analysis using LlamaIndex
 ├── webresource_rag.py            # RAG system for JavaScript web resource analysis
+├── cloudflow_operations.py       # Cloud flow retrieval and analysis operations
+├── cloudflow_rag.py              # RAG system for Power Automate cloud flow analysis
+├── expression_parser.py          # Expression parser for cloud flow expressions (regex + AST)
 ├── rate_limit_tracker.py         # Production-grade rate limit tracking with 5-min sliding window
 ├── main.py                       # Main CLI application with rate limit monitoring
-├── example_usage.py              # Example of RAG analysis usage (workflows + web resources)
-├── requirements.txt              # Python dependencies
+├── example_usage.py              # Example of RAG analysis usage (workflows + web resources + cloud flows)
+├── requirements.txt              # Python dependencies (includes ijson, lark, jsonpath-ng)
 ├── pyproject.toml                # Project metadata
 ├── AGENTS.md                     # Detailed coding agent instructions
 ├── ERROR_HANDLING.md             # Error handling guide and best practices
+├── SPEC.md                       # Cloud flow implementation specification
 ├── README.md                     # This file
 ├── .env                          # Environment variables (NOT in git)
 ├── .env.example                  # Template for environment configuration
 ├── .gitignore                    # Git ignore rules
 ├── wf.txt                        # Generated workflow metadata (created at runtime)
-└── webre.txt                     # Generated web resource metadata (created at runtime)
+├── webre.txt                     # Generated web resource metadata (created at runtime)
+├── cloudflows.txt                # Generated cloud flow metadata (created at runtime)
+├── storage/                      # Vector index for workflows and business rules
+├── storage_webres/               # Vector index for web resources
+└── storage_cloudflows/           # Vector index for cloud flows
 ```
 
 ## Usage Examples
@@ -225,6 +241,37 @@ result = webresource_agent.get_webresource_by_name('your_webresource_name')
 print(result)
 ```
 
+### RAG Analysis of Cloud Flows
+
+```python
+from cloudflow_rag import cloudflow_agent
+
+# Find all cloud flows that modify a specific field
+result = cloudflow_agent.find_set_value_flows('your_field_name')
+print(result)
+# Output example: Flow Type: Cloud Flow, Name: Update Contact Info, ID: a1b2c3...
+
+# Find cloud flows by trigger type that modify a field
+result = cloudflow_agent.find_flows_by_trigger_type('your_field_name', 'Manual')
+print(result)
+
+# Analyze all field updates across cloud flows
+result = cloudflow_agent.analyze_field_updates()
+print(result)
+
+# Get details about a specific cloud flow
+result = cloudflow_agent.get_flow_by_name('your_flow_name')
+print(result)
+
+# Analyze trigger types used in cloud flows
+result = cloudflow_agent.analyze_flow_triggers()
+print(result)
+
+# Analyze data sources for field updates (trigger, variable, static, etc.)
+result = cloudflow_agent.analyze_source_types()
+print(result)
+```
+
 ### Refreshing the Index
 
 ```python
@@ -236,12 +283,17 @@ shutil.rmtree('./storage')
 # After updating webre.txt, refresh the web resource vector index
 shutil.rmtree('./storage_webres')
 
+# After updating cloudflows.txt, refresh the cloud flow vector index
+shutil.rmtree('./storage_cloudflows')
+
 # Then re-run the RAG analysis
 from workflow_rag import root_agent
 from webresource_rag import webresource_agent
+from cloudflow_rag import cloudflow_agent
 
 workflow_result = root_agent.find_set_value_workflows('your_field_name')
 webres_result = webresource_agent.find_setvalue_webresources('your_field_name')
+cloudflow_result = cloudflow_agent.find_set_value_flows('your_field_name')
 ```
 
 ## Configuration
@@ -301,18 +353,32 @@ custom_rag = DataverseWorkflowRAG(persist_dir="./custom_storage")
 3. **Data Processing Layer** (`file_operations.py`)
 
    - Extracts workflow metadata including XAML definitions
-   - Writes to `wf.txt` for RAG indexing
+   - Extracts cloud flow metadata including trigger type, actions, and field modifications
+   - Writes to `wf.txt`, `webre.txt`, and `cloudflows.txt` for RAG indexing
 
-4. **RAG Analysis Layer** (`workflow_rag.py` and `webresource_rag.py`)
+4. **Cloud Flow Analysis Layer** (`cloudflow_operations.py`, `expression_parser.py`)
+
+   - Retrieves all active cloud flows (category=5, statecode=1) from Dataverse
+   - Uses streaming JSON parser (ijson) to handle large flow definitions (up to 1GB)
+   - Parses Azure Logic Apps Workflow Definition Language expressions
+   - **Phase 1**: Regex-based expression parsing for common patterns
+   - **Phase 2**: AST-based parsing with Lark for complex nested expressions
+   - Tracks variable declarations and modifications throughout flow execution
+   - Identifies "Update a row" and "Create a new row" Dataverse actions
+   - Extracts field modifications with source type tracking (trigger, variable, static, output, parameter)
+   - Creates structured metadata: flow name, ID, trigger type, actions, modified fields, source types
+
+5. **RAG Analysis Layer** (`workflow_rag.py`, `webresource_rag.py`, `cloudflow_rag.py`)
    - **Workflows**: Parses workflow XAML to extract actions and field references
    - **Web Resources**: Parses JavaScript code to detect setValue operations using regex patterns
+   - **Cloud Flows**: Analyzes flow definitions to detect field modifications and source types
    - Creates structured metadata: name, ID, actions, modified/read attributes
    - Detects multiple JavaScript patterns:
      - Direct chained calls: `formContext.getAttribute("field").setValue()`
      - Variable assignments: `let ctrl = formContext.getAttribute("field"); ctrl.setValue()`
      - Deprecated patterns: `Xrm.Page.getAttribute("field").setValue()`
      - Optional whitespace handling for formatting variations
-   - Builds vector indices using Google embeddings (separate indices for workflows and web resources)
+   - Builds vector indices using Google embeddings (separate indices for workflows, web resources, and cloud flows)
    - Enables natural language queries via LlamaIndex + Gemini LLM
 
 ### Rate Limit Tracking
@@ -366,6 +432,8 @@ Est. Time to Limit:          >230 minutes
 
 ### Metadata Structure
 
+#### Workflow Metadata (wf.txt)
+
 Each workflow is indexed with:
 
 - **workflow_name**: Display name
@@ -376,6 +444,37 @@ Each workflow is indexed with:
 - **modified_attributes**: Pipe-separated field names being SET
 - **read_attributes**: Pipe-separated field names being GET
 - **has_set_value**: "True" or "False"
+
+#### Cloud Flow Metadata (cloudflows.txt)
+
+Each cloud flow is indexed with:
+
+- **flow_name**: Display name of the cloud flow
+- **flow_id**: Unique GUID
+- **flow_type**: "Cloud Flow"
+- **trigger_type**: Trigger type (e.g., "Manual (Button)", "Automated - When a record is created or updated", "Scheduled")
+- **actions**: Pipe-separated list of action names
+- **modified_attributes**: Pipe-separated field names being modified
+- **read_attributes**: Pipe-separated field names being read from expressions
+- **source_types**: Pipe-separated field-to-source mappings (e.g., "firstname=trigger | lastname=variable")
+- **has_set_value**: "True" if flow modifies fields, "False" otherwise
+- **entities**: Pipe-separated list of entities referenced (e.g., "contacts | accounts")
+- **parse_error**: Error message if flow parsing failed (optional field)
+
+**Example cloudflows.txt entry:**
+```
+flow_name: Auto-Update Contact Names
+flow_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+flow_type: Cloud Flow
+trigger_type: Automated - When a record is created or updated (accounts)
+actions: Get_a_row | Condition | Update_a_row | Send_email
+modified_attributes: firstname | lastname | emailaddress1
+read_attributes: accountid | name
+source_types: firstname=trigger | lastname=variable | emailaddress1=static
+has_set_value: True
+entities: contacts | accounts
+---
+```
 
 ## API Documentation
 
@@ -609,6 +708,81 @@ General natural language query interface.
 
 **Returns:** LLM-generated answer
 
+### DataverseCloudFlowRAG Class
+
+#### `find_set_value_flows(fieldname: str) -> str`
+
+**Primary method** - Finds all cloud flows that modify a specific field.
+
+**Parameters:**
+
+- `fieldname`: Name of the field to search (e.g., "firstname", "emailaddress1")
+
+**Returns:** LLM-generated response with flow names and IDs, or "No cloud flows found that modify this field"
+
+**Example:**
+```python
+from cloudflow_rag import cloudflow_agent
+
+result = cloudflow_agent.find_set_value_flows('emailaddress1')
+print(result)
+# Output: Flow Type: Cloud Flow, Name: Update Contact Email, ID: abc123...
+```
+
+#### `find_flows_by_trigger_type(fieldname: str, trigger_type: str) -> str`
+
+Finds cloud flows of a specific trigger type that modify a field.
+
+**Parameters:**
+
+- `fieldname`: Name of the field to search
+- `trigger_type`: Trigger type to filter by (e.g., "Manual", "Automated", "Scheduled")
+
+**Returns:** LLM-generated list of flow names, IDs, and trigger types
+
+**Example:**
+```python
+result = cloudflow_agent.find_flows_by_trigger_type('firstname', 'Manual')
+```
+
+#### `analyze_field_updates() -> str`
+
+Identifies all field updates across all cloud flows.
+
+**Returns:** LLM-generated summary of all fields modified with flow details
+
+#### `get_flow_by_name(name: str) -> str`
+
+Get details about a specific cloud flow by name.
+
+**Parameters:**
+
+- `name`: Name of the cloud flow
+
+**Returns:** LLM-generated description with flow ID, trigger type, modified fields, and actions
+
+#### `analyze_flow_triggers() -> str`
+
+Analyzes trigger types across all cloud flows.
+
+**Returns:** LLM-generated summary of trigger distribution (manual vs automated vs scheduled)
+
+#### `analyze_source_types() -> str`
+
+Analyzes data source types used in field updates.
+
+**Returns:** LLM-generated description of how fields get their values (trigger, variable, static, output, parameter)
+
+#### `query(question: str) -> str`
+
+General natural language query interface for cloud flows.
+
+**Parameters:**
+
+- `question`: Natural language question about cloud flows
+
+**Returns:** LLM-generated answer
+
 ## Troubleshooting
 
 ### Authentication Errors
@@ -665,13 +839,13 @@ pip install -r requirements.txt --upgrade
 - Access tokens expire after 1 hour (no automatic refresh implemented)
 - Large XAML files (>1MB) may cause processing delays
 - Hardcoded component type filters (currently only type 29 for workflows)
-- No support for cloud flows (modern Power Automate flows)
+- Cloud flow expression parser may not handle all edge cases (complex nested expressions)
 - Rate limit tracking is informational only (does not throttle requests proactively)
+- Cloud flow parsing errors are logged but flows with errors are skipped
 
 ## Roadmap
 
 - [ ] Add automatic token refresh logic
-- [ ] Support for modern Power Automate cloud flows
 - [ ] Export results to CSV/JSON formats
 - [ ] Add unit tests and integration tests
 - [ ] Performance optimization for large XAML files
@@ -679,6 +853,11 @@ pip install -r requirements.txt --upgrade
 - [ ] Ribbon command JavaScript analysis
 - [ ] PCF control custom code analysis
 - [ ] Proactive request throttling before hitting limits
+- [ ] Enhanced cloud flow expression parsing (handle more edge cases)
+- [x] Power Automate cloud flow support (completed)
+- [x] AST-based expression parser with Lark (completed)
+- [x] Variable tracking in cloud flows (completed)
+- [x] Cloud flow source type analysis (completed)
 - [x] Production-grade rate limit tracking (completed)
 - [x] Automatic retry logic with exponential backoff (completed)
 - [x] Business rule analysis (completed)

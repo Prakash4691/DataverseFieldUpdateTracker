@@ -11,9 +11,10 @@ Python tool that finds which Microsoft Dataverse artifacts modify a given field:
 
 - Business Rules (workflow category=2)
 - Classic Workflows (workflow category=0)
+- Power Automate Cloud Flows (workflow category=5)
 - Form script Web Resources (JavaScript)
 
-It retrieves dependencies from Dataverse, exports workflow/webresource content, and uses RAG (LlamaIndex + Gemini) to identify which components set values.
+It retrieves dependencies from Dataverse, exports workflow/webresource/cloudflow content, and uses RAG (LlamaIndex + Gemini) to identify which components set values. For cloud flows, it includes advanced expression parsing (regex + AST-based with Lark) and variable tracking.
 
 ## Setup
 
@@ -55,6 +56,10 @@ Generated files (created/overwritten at runtime):
 
 - `wf.txt` (workflow metadata)
 - `webre.txt` (web resource metadata)
+- `cloudflows.txt` (cloud flow metadata)
+- `storage/` (vector index for workflows)
+- `storage_webres/` (vector index for web resources)
+- `storage_cloudflows/` (vector index for cloud flows)
 
 ## Checks
 
@@ -88,7 +93,31 @@ If you can run against a real environment, also run `python3 main.py` and confir
 - Rate limit monitoring: `rate_limit_tracker.py`
 - Workflow RAG / XAML extraction: `workflow_rag.py`
 - Web resource RAG / JS extraction: `webresource_rag.py`
+- Cloud flow operations / retrieval: `cloudflow_operations.py`
+- Cloud flow expression parsing: `expression_parser.py`
+- Cloud flow RAG / field tracking: `cloudflow_rag.py`
 - File I/O for exports: `file_operations.py`
+
+### Cloud Flow Components
+
+**expression_parser.py**
+- Phase 1: Regex-based parser for common Azure Logic Apps expressions
+- Phase 2: AST-based parser using Lark for complex nested expressions
+- ExpressionParser: Basic regex patterns for @triggerBody(), @variables(), etc.
+- AdvancedExpressionParser: AST parsing with fallback to regex
+- VariableTracker: Tracks variable declarations and modifications
+
+**cloudflow_operations.py**
+- CloudFlowOperations: Retrieves active cloud flows (category=5, statecode=1)
+- CloudFlowParser: Streaming JSON parser using ijson for large flows (up to 1GB)
+- UpdateActionAnalyzer: Identifies Dataverse "Update a row" and "Create a new row" actions
+- CloudFlowMetadataExtractor: Extracts triggers, actions, modified fields, source types, variables
+
+**cloudflow_rag.py**
+- DataverseCloudFlowRAG: RAG system for cloud flow analysis
+- Parses cloudflows.txt format with field source tracking
+- Methods: find_set_value_flows(), find_flows_by_trigger_type(), analyze_field_updates()
+- Uses separate vector index (storage_cloudflows/) with Gemini embeddings
 
 ## Notes for agents
 

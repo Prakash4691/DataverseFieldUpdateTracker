@@ -1,7 +1,6 @@
 import os
 import ast
 import re
-from typing import List, Dict
 from llama_index.core import VectorStoreIndex, Document, StorageContext, load_index_from_storage, Settings
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.vector_stores import MetadataFilters, MetadataFilter, FilterOperator
@@ -73,7 +72,7 @@ class DataverseWebResourceRAG:
                 f"Please verify your Google API key and network connection."
             ) from e
         
-    def _extract_javascript_actions(self, js_code: str) -> List[str]:
+    def _extract_javascript_actions(self, js_code: str) -> list[str]:
         """
         Extract action types from JavaScript code by searching for action keywords.
         
@@ -91,7 +90,7 @@ class DataverseWebResourceRAG:
                     break
         return actions
     
-    def _extract_fields_modified(self, js_code: str) -> List[str]:
+    def _extract_fields_modified(self, js_code: str) -> list[str]:
         """
         Extract field names being modified with setValue operations.
         
@@ -141,7 +140,7 @@ class DataverseWebResourceRAG:
         
         return list(set(fields_modified))
     
-    def _preprocess_webresources(self) -> List[Document]:
+    def _preprocess_webresources(self) -> list[Document]:
         """
         Preprocess web resource file into structured documents with metadata.
         
@@ -384,12 +383,3 @@ ACTION DETAILS:
             similarity_top_k=3,
             response_mode="compact"
         )
-
-
-# Create default RAG instance
-try:
-    webresource_agent = DataverseWebResourceRAG()
-except Exception as e:
-    print(f"Warning: Failed to initialize default web resource RAG agent: {str(e)}")
-    print("You will need to initialize DataverseWebResourceRAG() manually after resolving the issue.")
-    webresource_agent = None

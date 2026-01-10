@@ -2,9 +2,9 @@
 CLI runner for Dataverse field update tracking with production-grade rate limit monitoring.
 
 Steps performed:
-1) Pulls workflows and web resources for a given entity/attribute.
-2) Writes metadata to wf.txt and webre.txt.
-3) Runs workflow and web resource RAG to find setValue/setDefault usage.
+1) Pulls workflows, web resources, and cloud flows for a given entity/attribute.
+2) Writes metadata to wf.txt, webre.txt, and cloudflows.txt.
+3) Runs workflow, web resource, and cloud flow RAG to find field updates.
 4) Reports rate limit tracking statistics.
 """
 
@@ -13,6 +13,8 @@ from dataverse_operations import DataverseOperations
 from file_operations import ImplementationDefinitionFileOperations
 from workflow_rag import DataverseWorkflowRAG
 from webresource_rag import DataverseWebResourceRAG
+from cloudflow_operations import CloudFlowOperations, CloudFlowMetadataExtractor
+from cloudflow_rag import DataverseCloudFlowRAG
 from rate_limit_tracker import RateLimitTracker
 
 
@@ -61,10 +63,41 @@ class DataverseFieldUpdateTrackerApp:
 		ImplementationDefinitionFileOperations.create_webresourceflow_file(webreslist)
 		print(f"✓ Saved web resource metadata to webre.txt")
 
+		# Get cloud flows with tracking
+		print("\n🔄 Retrieving cloud flows...")
+		cloudflow_ops = CloudFlowOperations(self.dv_ops)
+		cloudflows = cloudflow_ops.get_all_active_cloudflows(rate_limit_tracker=self.rate_tracker)
+		print(f"✓ Found {len(cloudflows)} active cloud flows")
+
+		# Analyze cloud flows with progress feedback
+		print("\n📊 Analyzing cloud flow definitions...")
+		extractor = CloudFlowMetadataExtractor(use_advanced_parser=True)
+		analyzed_flows = []
+		errors = 0
+
+		for i, flow in enumerate(cloudflows, 1):
+			# Show progress
+			print(f"  Processing flow {i}/{len(cloudflows)}: {flow.get('name', 'Unknown')}...", end='\r')
+
+			metadata = extractor.extract_metadata(
+				flow_id=flow.get('workflowid', ''),
+				flow_name=flow.get('name', ''),
+				clientdata=flow.get('clientdata', '')
+			)
+			analyzed_flows.append(metadata)
+
+			if metadata.get('parse_error'):
+				errors += 1
+
+		print(f"\n✓ Analyzed {len(analyzed_flows)} flows ({errors} errors)")
+		ImplementationDefinitionFileOperations.create_cloudflow_file(analyzed_flows)
+		print(f"✓ Saved cloud flow metadata to cloudflows.txt")
+
 	def _run_rag_analysis(self, attributename: str) -> None:
 		"""Instantiate RAG agents and print findings for the attribute."""
 		workflow_agent = DataverseWorkflowRAG()
 		webresource_agent = DataverseWebResourceRAG()
+		cloudflow_agent = DataverseCloudFlowRAG()
 
 		print("\n" + "=" * 80)
 		print("DATAVERSE FIELD UPDATE ANALYSIS")
@@ -80,6 +113,12 @@ class DataverseFieldUpdateTrackerApp:
 		print("-" * 80)
 		webres_result = webresource_agent.find_setvalue_webresources(attributename)
 		print(webres_result)
+		print("=" * 80)
+
+		print("\n3. Power Automate Cloud Flows that modify this field:")
+		print("-" * 80)
+		cf_result = cloudflow_agent.find_set_value_flows(attributename)
+		print(cf_result)
 
 	def run(self, entityname: str, attributename: str) -> None:
 		"""Full pipeline: fetch data, generate files, analyze, and show rate limit stats."""

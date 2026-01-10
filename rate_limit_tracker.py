@@ -7,7 +7,6 @@ Dataverse service protection limits (6000 requests per 5 minutes per user).
 
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List
 
 
 @dataclass
@@ -48,7 +47,7 @@ class RateLimitTracker:
     total_429_errors: int = 0
     total_retries: int = 0
     total_wait_time: float = 0.0
-    request_history: List[RequestMetrics] = field(default_factory=list)
+    request_history: list[RequestMetrics] = field(default_factory=list)
     start_time: float = field(default_factory=time.time)
     
     def record_request(self, endpoint: str, duration: float, hit_429: bool = False, 
@@ -95,7 +94,7 @@ class RateLimitTracker:
         cutoff_time = time.time() - 300
         return sum(1 for r in self.request_history if r.timestamp > cutoff_time)
     
-    def get_summary(self) -> Dict[str, any]:
+    def get_summary(self) -> dict[str, any]:
         """
         Get comprehensive tracking summary.
         
@@ -152,7 +151,7 @@ class RateLimitTracker:
         summary = self.get_summary()
         
         print("\n" + "=" * 80)
-        print("RATE LIMIT TRACKING SUMMARY")
+        print("RATE LIMIT TRACKING SUMMARY Applies only for direct API calls")
         print("=" * 80)
         print(f"Total Requests:              {summary['total_requests']}")
         print(f"Requests (Last 5 min):       {summary['requests_last_5_minutes']} / 6000 ({summary['rate_limit_percentage']}%)")

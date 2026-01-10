@@ -1,7 +1,6 @@
 import os
 import ast
 import re
-from typing import List, Dict
 from llama_index.core import VectorStoreIndex, Document, StorageContext, load_index_from_storage, Settings
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.vector_stores import MetadataFilters, MetadataFilter, FilterOperator
@@ -85,7 +84,7 @@ class DataverseWorkflowRAG:
                 f"Please verify your Google API key and network connection."
             ) from e
         
-    def _extract_xaml_actions(self, xaml: str) -> List[str]:
+    def _extract_xaml_actions(self, xaml: str) -> list[str]:
         """
         Extract action types from XAML content by searching for action keywords.
         
@@ -103,7 +102,7 @@ class DataverseWorkflowRAG:
                     break
         return actions
     
-    def _extract_attributes_modified(self, xaml: str) -> List[str]:
+    def _extract_attributes_modified(self, xaml: str) -> list[str]:
         """
         Extract attribute names being WRITTEN (SET operations only).
         
@@ -121,7 +120,7 @@ class DataverseWorkflowRAG:
         matches = re.findall(set_pattern, xaml)
         return list(set(matches))
     
-    def _extract_attributes_read(self, xaml: str) -> List[str]:
+    def _extract_attributes_read(self, xaml: str) -> list[str]:
         """
         Extract attribute names being READ (GET operations only).
         
@@ -151,7 +150,7 @@ class DataverseWorkflowRAG:
         """
         return self.CATEGORY_NAMES.get(category, f"Unknown Type (Category {category})")
     
-    def _preprocess_workflows(self) -> List[Document]:
+    def _preprocess_workflows(self) -> list[Document]:
         """
         Preprocess workflow file into structured documents with metadata.
         
@@ -471,12 +470,3 @@ ACTION DETAILS:
             similarity_top_k=3,
             response_mode="compact"
         )
-
-
-# Create default RAG instance
-try:
-    root_agent = DataverseWorkflowRAG()
-except Exception as e:
-    print(f"Warning: Failed to initialize default workflow RAG agent: {str(e)}")
-    print("You will need to initialize DataverseWorkflowRAG() manually after resolving the issue.")
-    root_agent = None
