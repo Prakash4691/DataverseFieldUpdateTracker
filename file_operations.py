@@ -33,6 +33,8 @@ class ImplementationDefinitionFileOperations:
         try:
             if not workflowlist:
                 print("Warning: No workflows to write to file")
+                with open('wf.txt', 'w', encoding='utf-8') as f:
+                    f.write("")
                 return
             
             if not isinstance(workflowlist, list):
@@ -82,6 +84,8 @@ class ImplementationDefinitionFileOperations:
         try:
             if not webresourcelist:
                 print("Warning: No web resources to write to file")
+                with open('webre.txt', 'w', encoding='utf-8') as f:
+                    f.write("")
                 return
             
             if not isinstance(webresourcelist, list):

@@ -11,6 +11,7 @@ from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.vector_stores import MetadataFilters, MetadataFilter, FilterOperator
 from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
+from bash_search import BashSearch
 
 
 class DataverseCloudFlowRAG:
@@ -62,6 +63,9 @@ class DataverseCloudFlowRAG:
                 similarity_top_k=5,
                 response_mode="compact"
             )
+
+            # Add bash search for exact matches
+            self.bash_search = BashSearch(cloudflow_file=cloudflow_file)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to initialize cloud flow RAG system: {str(e)}. "
@@ -189,12 +193,6 @@ FIELD MODIFICATION DETAILS:
                 print(f"✗ Error processing cloud flow entry: {e}")
                 continue
 
-        if not documents:
-            raise ValueError(
-                f"No valid cloud flows found in '{self.cloudflow_file}'. "
-                f"The file may be empty or contain invalid data."
-            )
-
         return documents
 
     def _load_or_create_index(self) -> VectorStoreIndex:
@@ -213,6 +211,16 @@ FIELD MODIFICATION DETAILS:
         try:
             print("Creating new cloud flow index...")
             documents = self._preprocess_cloudflows()
+
+            if not documents:
+                print("⚠ No cloud flows found in file. Creating empty index.")
+                # Create a placeholder document to avoid empty index error
+                placeholder = Document(
+                    text="No cloud flows available",
+                    metadata={'flow_name': 'None', 'flow_id': 'None', 
+                             'modified_attributes': '', 'has_set_value': 'False'}
+                )
+                documents = [placeholder]
 
             node_parser = SentenceSplitter(chunk_size=512, chunk_overlap=100)
 
@@ -258,43 +266,17 @@ FIELD MODIFICATION DETAILS:
         """
         Find all cloud flows that SET/modify a specific field.
 
+        Uses bash grep for fast exact matching. No LLM call needed.
+
         Args:
             fieldname: Field name (e.g., "firstname", "emailaddress1")
 
         Returns:
-            LLM-generated response with flow names and IDs
+            Formatted string with flow names and IDs
         """
-        # Create metadata filter for the specific field
-        filters = MetadataFilters(
-            filters=[
-                MetadataFilter(
-                    key="modified_attributes",
-                    value=fieldname,
-                    operator=FilterOperator.CONTAINS
-                ),
-                MetadataFilter(
-                    key="has_set_value",
-                    value="True",
-                    operator=FilterOperator.EQ
-                )
-            ],
-            condition="and"
-        )
-
-        # Create filtered query engine
-        filtered_engine = self.index.as_query_engine(
-            llm=self.llm,
-            similarity_top_k=5,
-            response_mode="compact",
-            filters=filters
-        )
-
-        response = filtered_engine.query(
-            f"List all cloud flows that modify or update the field '{fieldname}'. "
-            f"For each flow, provide: Flow Type: Cloud Flow, Name: <flow_name>, ID: <flow_id>. "
-            f"If no flows found, return 'No cloud flows found that modify this field'."
-        )
-        return str(response)
+        # Use bash for exact field search (fast, free)
+        results = self.bash_search.search_cloudflows(fieldname)
+        return self.bash_search.format_cloudflow_results(results)
 
     def find_flows_by_trigger_type(self, fieldname: str, trigger_type: str) -> str:
         """

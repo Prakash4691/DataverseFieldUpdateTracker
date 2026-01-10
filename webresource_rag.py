@@ -6,6 +6,7 @@ from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.vector_stores import MetadataFilters, MetadataFilter, FilterOperator
 from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
+from bash_search import BashSearch
 
 
 class DataverseWebResourceRAG:
@@ -54,11 +55,11 @@ class DataverseWebResourceRAG:
             # Configure Google Gemini LLM and embeddings
             self.llm = GoogleGenAI(model="gemini-2.5-flash", temperature=0.1)
             self.embed_model = GoogleGenAIEmbedding(model="models/text-embedding-004")
-            
+
             # Set global settings
             Settings.llm = self.llm
             Settings.embed_model = self.embed_model
-            
+
             # Load or create index
             self.index = self._load_or_create_index()
             self.query_engine = self.index.as_query_engine(
@@ -66,6 +67,9 @@ class DataverseWebResourceRAG:
                 similarity_top_k=3,
                 response_mode="compact"
             )
+
+            # Add bash search for exact matches
+            self.bash_search = BashSearch(webresource_file=webresource_file)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to initialize RAG system: {str(e)}. "
@@ -293,54 +297,19 @@ ACTION DETAILS:
     
     def find_setvalue_webresources(self, fieldname: str) -> str:
         """
-        Find all web resources with setValue operations for a specific field.
-        Case-sensitive field name matching.
-        
+        Find all web resources that use setValue on a specific field.
+
+        Uses bash grep for fast exact matching. No LLM call needed.
+
         Args:
-            fieldname: The field/attribute name to search for (case-sensitive)
-            
+            fieldname: Field name to search for
+
         Returns:
-            LLM-generated response with web resource names and IDs, or "No webresources found"
+            Formatted string with web resource names
         """
-        # Create metadata filter for the specific field (case-sensitive)
-        filters = MetadataFilters(
-            filters=[
-                MetadataFilter(
-                    key="modified_fields",
-                    value=fieldname,
-                    operator=FilterOperator.CONTAINS
-                ),
-                MetadataFilter(
-                    key="has_set_value",
-                    value="True",
-                    operator=FilterOperator.EQ
-                )
-            ],
-            condition="and"
-        )
-        
-        # Create filtered query engine
-        filtered_engine = self.index.as_query_engine(
-            llm=self.llm,
-            similarity_top_k=3,
-            response_mode="compact",
-            filters=filters
-        )
-        
-        response = filtered_engine.query(
-            f"List all web resources that use setValue() to modify the field '{fieldname}'. "
-            f"For each web resource, provide: name and ID. "
-            f"Return format: Name: <webresource_name>, ID: <webresource_id>. "
-            f"If no web resources are found, return 'No webresources found'."
-        )
-        
-        result = str(response)
-        
-        # Check if the response indicates no results
-        if not result or "no web resource" in result.lower() or "none" in result.lower():
-            return "No webresources found"
-        
-        return result
+        # Use bash for exact field search (fast, free)
+        results = self.bash_search.search_webresources(fieldname)
+        return self.bash_search.format_webresource_results(results)
     
     def analyze_field_updates(self) -> str:
         """

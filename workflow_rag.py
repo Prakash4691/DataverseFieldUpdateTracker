@@ -6,6 +6,7 @@ from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.vector_stores import MetadataFilters, MetadataFilter, FilterOperator
 from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
+from bash_search import BashSearch
 
 
 class DataverseWorkflowRAG:
@@ -66,11 +67,11 @@ class DataverseWorkflowRAG:
             # Configure Google Gemini LLM and embeddings
             self.llm = GoogleGenAI(model="gemini-2.5-flash", temperature=0.1)
             self.embed_model = GoogleGenAIEmbedding(model="models/text-embedding-004")
-            
+
             # Set global settings
             Settings.llm = self.llm
             Settings.embed_model = self.embed_model
-            
+
             # Load or create index
             self.index = self._load_or_create_index()
             self.query_engine = self.index.as_query_engine(
@@ -78,6 +79,9 @@ class DataverseWorkflowRAG:
                 similarity_top_k=3,
                 response_mode="compact"
             )
+
+            # Add bash search for exact matches
+            self.bash_search = BashSearch(workflow_file=workflow_file)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to initialize RAG system: {str(e)}. "
@@ -252,12 +256,6 @@ ACTION DETAILS:
                 print(f"✗ Error processing workflow: {e}")
                 continue
         
-        if not documents:
-            raise ValueError(
-                f"No valid workflows found in '{self.workflow_file}'. "
-                f"The file may be empty or contain invalid data."
-            )
-        
         return documents
     
     def _load_or_create_index(self) -> VectorStoreIndex:
@@ -279,6 +277,16 @@ ACTION DETAILS:
         try:
             print("Creating new index with XAML preprocessing...")
             documents = self._preprocess_workflows()
+            
+            if not documents:
+                print("⚠ No workflows/business rules found in file. Creating empty index.")
+                # Create a placeholder document to avoid empty index error
+                placeholder = Document(
+                    text="No workflows or business rules available",
+                    metadata={'workflow_name': 'None', 'workflow_id': 'None', 
+                             'modified_attributes': '', 'has_set_value': 'False'}
+                )
+                documents = [placeholder]
             
             node_parser = SentenceSplitter(chunk_size=512, chunk_overlap=100)
             
@@ -320,46 +328,19 @@ ACTION DETAILS:
     
     def find_set_value_workflows(self, fieldname: str) -> str:
         """
-        Find all workflows (business rules and classic workflows) with SET VALUE or 
-        SET DEFAULT actions for a specific field.
-        
+        Find all workflows/business rules that SET/modify a specific field.
+
+        Uses bash grep for fast exact matching. No LLM call needed.
+
         Args:
-            fieldname: The field/attribute name to search for
-            
+            fieldname: Field name to search for
+
         Returns:
-            LLM-generated response with workflow names, IDs, and types
+            Formatted string with workflow names, types, and IDs
         """
-        # Create metadata filter for the specific field
-        filters = MetadataFilters(
-            filters=[
-                MetadataFilter(
-                    key="modified_attributes",
-                    value=fieldname,
-                    operator=FilterOperator.CONTAINS
-                ),
-                MetadataFilter(
-                    key="has_set_value",
-                    value="True",
-                    operator=FilterOperator.EQ
-                )
-            ],
-            condition="and"
-        )
-        
-        # Create filtered query engine
-        filtered_engine = self.index.as_query_engine(
-            llm=self.llm,
-            similarity_top_k=3,
-            response_mode="compact",
-            filters=filters
-        )
-        
-        response = filtered_engine.query(
-            f"List all workflows (business rules and classic workflows) that set or modify the field '{fieldname}'. "
-            f"For each workflow, provide: workflow type, name, and ID. "
-            f"Return format: Type: <workflow_type>, Name: <workflow_name>, ID: <workflow_id>"
-        )
-        return str(response)
+        # Use bash for exact field search (fast, free)
+        results = self.bash_search.search_workflows(fieldname)
+        return self.bash_search.format_workflow_results(results)
     
     def find_workflows_by_type(self, fieldname: str, category: int) -> str:
         """
